@@ -32,5 +32,6 @@ const driverSchema = new mongoose.Schema(
 
 driverSchema.index({ location: '2dsphere' });
 driverSchema.index({ isOnline: 1, isActive: 1, isVerified: 1 });
+driverSchema.index({ isOnline: 1, locationUpdatedAt: 1 });
 
 module.exports = mongoose.model('Driver', driverSchema);

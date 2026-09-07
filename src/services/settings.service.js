@@ -7,10 +7,12 @@ const DEFAULTS = {
   maxQueuedOrders: 1,
   driverLocationStaleSeconds: 45,
   maxLocationAccuracyMeters: 80,
-  tripCommissionType: 'FIXED',
-  tripCommission: 11,
-  lowRatingFee: 15,
+
+  tripCommissionType: 'PERCENTAGE',
+  tripCommission: 13,
+  lowRatingCommission: 15,
   ratingThreshold: 3,
+
   minimumDriverBalance: 0,
   negativeBalanceAllowed: false,
   matchingWeightDistance: 0.45,

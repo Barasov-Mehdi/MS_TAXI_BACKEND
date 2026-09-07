@@ -118,7 +118,12 @@ router.post('/orders/:id/start', async (req, res, next) => {
 
 router.post('/orders/:id/complete', async (req, res, next) => {
   try {
-    ok(res, { order: await orderService.completeTrip({ orderId: req.params.id, driver: req.driver, user: req.user }) });
+    ok(res, { order: await orderService.completeTrip({
+      orderId: req.params.id,
+      driver: req.driver,
+      user: req.user,
+      idempotencyKey: req.get('Idempotency-Key'),
+    }) });
   } catch (e) { next(e); }
 });
 

@@ -269,7 +269,7 @@ async function completeTrip({ orderId, driver, user }) {
     }
     assertTransition(order.status, OrderStatus.TRIP_COMPLETED);
 
-    order.status = OrderStatus.RATING_PENDING;
+    order.status = OrderStatus.TRIP_COMPLETED;
     order.completedAt = new Date();
     order.version += 1;
     if (!order.commissionApplied) {
@@ -278,6 +278,12 @@ async function completeTrip({ orderId, driver, user }) {
     }
     await order.save({ session });
     await recordHistory(order._id, OrderStatus.TRIP_STARTED, OrderStatus.TRIP_COMPLETED, 'DRIVER', user._id, null, session);
+
+    assertTransition(order.status, OrderStatus.RATING_PENDING);
+    order.status = OrderStatus.RATING_PENDING;
+    order.version += 1;
+    await order.save({ session });
+    await recordHistory(order._id, OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, 'SYSTEM', user._id, 'awaiting rating', session);
 
     const drv = await Driver.findById(driver._id).session(session);
     drv.currentOrderId = null;
@@ -376,12 +382,10 @@ async function rateOrder({ order, customer, score, comment }) {
       [{ orderId: order._id, customerId: customer._id, driverId: order.driverId, score, comment }],
       { session }
     );
-    const settings = await getSettings();
-    if (score < settings.ratingThreshold) {
-      await walletService.applyLowRatingFee(order.driverId, rating._id, session);
-      rating.feeApplied = true;
-      await rating.save({ session });
-    }
+
+    // Commission already applied in completeTrip() using driver.ratingAvg at trip end.
+    // Here we only update the average for future trips.
+
     const agg = await Rating.aggregate([
       { $match: { driverId: order.driverId } },
       { $group: { _id: '$driverId', avg: { $avg: '$score' }, n: { $sum: 1 } } },

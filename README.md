@@ -1,12 +1,11 @@
 # Taxi Backend (Node.js + Express + MongoDB)
 
-Production-oriented taxi backend: JWT auth, geospatial driver matching (MongoDB `2dsphere`), integer AZN/qəpik money, order state machine, queued orders (100m window), wallets, promo, Socket.IO, Redis adapter, background worker.
+Production-oriented taxi backend: JWT auth, geospatial driver matching (MongoDB `2dsphere`), integer AZN/qəpik money, order state machine, queued orders (100m window), wallets, promo, Socket.IO, background worker. Commission is 13% of fare, or 15% when the driver's current ratingAvg is below 3.
 
 ## Stack
 
 - Node.js 20 + Express
 - MongoDB 7 (GeoJSON + 2dsphere instead of PostGIS)
-- Redis (Socket.IO adapter, optional locks)
 - Socket.IO
 - Joi, JWT access + refresh, bcrypt, Helmet, rate limit
 
@@ -16,7 +15,7 @@ MongoDB was chosen because you requested Express + MongoDB. Spatial queries use 
 
 ```bash
 cp .env.example .env
-docker compose up -d mongo redis
+docker compose up -d mongo
 npm install
 npm run seed
 npm run dev

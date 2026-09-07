@@ -1,32 +1,15 @@
 const jwt = require('jsonwebtoken');
-const { createAdapter } = require('@socket.io/redis-adapter');
-const { Redis } = require('ioredis');
+const { Server } = require('socket.io');
 const config = require('../config');
 const { User, Customer, Driver, Order } = require('../models');
 const { setIo } = require('./emitter');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
-const orderService = require('../services/order.service');
 
 function attachWebsocket(httpServer) {
-  const { Server } = require('socket.io');
   const io = new Server(httpServer, {
     cors: { origin: config.corsOrigin, credentials: true },
   });
-
-  if (config.redisEnabled) {
-    try {
-      const pub = new Redis(config.redisUrl, { maxRetriesPerRequest: 1, lazyConnect: true });
-      const sub = new Redis(config.redisUrl, { maxRetriesPerRequest: 1, lazyConnect: true });
-      pub.on('error', (err) => console.warn('Redis pub:', err.message));
-      sub.on('error', (err) => console.warn('Redis sub:', err.message));
-      io.adapter(createAdapter(pub, sub));
-    } catch (e) {
-      console.warn('Redis adapter unavailable, using in-memory sockets');
-    }
-  } else {
-    console.warn('Redis disabled — Socket.IO in-memory mode');
-  }
 
   setIo(io);
 
@@ -79,9 +62,7 @@ function attachWebsocket(httpServer) {
         const d = await Driver.findOne({ userId: user._id });
         await locationService.updateDriverLocation(d, payload);
         cb && cb({ ok: true });
-      } catch (e) {
-        cb && cb({ error: e.message });
-      }
+      } catch (e) { cb && cb({ error: e.message }); }
     });
 
     socket.on('customer_location_update', async (payload, cb) => {
@@ -90,24 +71,17 @@ function attachWebsocket(httpServer) {
         const c = await Customer.findOne({ userId: user._id });
         await locationService.updateCustomerLocation(c, payload);
         cb && cb({ ok: true });
-      } catch (e) {
-        cb && cb({ error: e.message });
-      }
+      } catch (e) { cb && cb({ error: e.message }); }
     });
 
     socket.on('message_send', async (payload, cb) => {
       try {
         const row = await chatService.sendMessage({
-          orderId: payload.orderId,
-          senderUser: user,
-          receiverUserId: payload.receiverId,
-          message: payload.message,
-          clientMessageId: payload.clientMessageId,
+          orderId: payload.orderId, senderUser: user, receiverUserId: payload.receiverId,
+          message: payload.message, clientMessageId: payload.clientMessageId,
         });
         cb && cb({ ok: true, message: row });
-      } catch (e) {
-        cb && cb({ error: e.message });
-      }
+      } catch (e) { cb && cb({ error: e.message }); }
     });
   });
 
