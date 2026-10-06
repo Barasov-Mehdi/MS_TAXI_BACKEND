@@ -17,7 +17,19 @@ async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, 
   );
 }
 
-async function createOrder({ customer, user, pickup, destination, promoCode, paymentMethod, idempotencyKey }) {
+async function createOrder({
+  customer,
+  user,
+  pickup,
+  destination,
+  stops,
+  vehicleType = 'basic',
+  distanceMeters: clientDistance,
+  durationMin: clientDuration,
+  promoCode,
+  paymentMethod,
+  idempotencyKey,
+}) {
   if (idempotencyKey) {
     const existing = await Order.findOne({ customerId: customer._id, idempotencyKey });
     if (existing) return existing;
@@ -37,11 +49,19 @@ async function createOrder({ customer, user, pickup, destination, promoCode, pay
   });
   if (active) throw new AppError('ACTIVE_ORDER_EXISTS', 'Customer already has an active order', 409);
 
-  const distanceMeters = haversineMeters(
-    pickup.lat, pickup.lng, destination.lat, destination.lng
-  );
+  if (!pricingService.VEHICLE_TYPES.includes(vehicleType)) {
+    throw new AppError('INVALID_VEHICLE_TYPE', 'Unknown vehicle type', 400);
+  }
+  const stopList = stops && stops.length ? stops : [destination];
+  const { distanceMeters, durationMin } = pricingService.resolveTripMetrics({
+    points: [pickup, ...stopList],
+    distanceMeters: clientDistance,
+    durationMin: clientDuration,
+  });
+  // Qiymət həmişə serverdə hesablanır; müştəridən qiymət qəbul edilmir.
+  const tripInput = { distanceMeters, durationMin, stopCount: stopList.length - 1, vehicleType };
 
-  const quote = await pricingService.calculateTripPrice({ distanceMeters, promoDiscountMinor: 0 });
+  const quote = await pricingService.calculateTripPrice({ ...tripInput, promoDiscountMinor: 0 });
   let promo = null;
   let discountMinor = 0;
   if (promoCode) {
@@ -49,7 +69,7 @@ async function createOrder({ customer, user, pickup, destination, promoCode, pay
     promo = r.promo;
     discountMinor = r.discountMinor;
   }
-  const priced = await pricingService.calculateTripPrice({ distanceMeters, promoDiscountMinor: discountMinor });
+  const priced = await pricingService.calculateTripPrice({ ...tripInput, promoDiscountMinor: discountMinor });
 
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -61,6 +81,9 @@ async function createOrder({ customer, user, pickup, destination, promoCode, pay
         pickup: point(pickup.lng, pickup.lat),
         destination: point(destination.lng, destination.lat),
         distanceMeters,
+        durationMin,
+        vehicleType,
+        stops: stopList.map((s) => ({ lat: s.lat, lng: s.lng, label: s.label, address: s.address })),
         paymentMethod: paymentMethod || 'CASH',
         promoCode: promoCode ? String(promoCode).toUpperCase() : null,
         pricingSnapshot: priced,

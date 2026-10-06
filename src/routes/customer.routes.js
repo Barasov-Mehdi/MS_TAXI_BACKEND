@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const orderService = require('../services/order.service');
+const pricingService = require('../services/pricing.service');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
 const { Order, Complaint, OrderIssue, User, Driver } = require('../models');
@@ -29,14 +30,75 @@ router.post('/location', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+const toPoint = (p) => {
+  const lat = Number(p && p.lat);
+  const lng = Number(p && p.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new AppError('INVALID_POINTS', 'Invalid coordinates', 400);
+  }
+  return { lat, lng, label: p.label, address: p.address };
+};
+
+/** Yeni format: { pickup, stops[] }; köhnə format: pickupLat/pickupLng/destLat/destLng. */
+function parseTrip(body) {
+  const pickup = toPoint(body.pickup || { lat: body.pickupLat, lng: body.pickupLng });
+  let rawStops = [];
+  if (Array.isArray(body.stops) && body.stops.length) rawStops = body.stops;
+  else if (body.dropoff) rawStops = [body.dropoff];
+  else rawStops = [{ lat: body.destLat, lng: body.destLng }];
+  if (rawStops.length > 4) throw new AppError('TOO_MANY_STOPS', 'At most 4 stops', 400);
+  const stops = rawStops.map(toPoint);
+  return { pickup, stops, destination: stops[stops.length - 1] };
+}
+
+// Sifarişdən əvvəl qiymət: DB-dəki aktiv tarifdən (admin dəyişə bilər) hesablanır.
+router.post('/orders/quote', async (req, res, next) => {
+  try {
+    const { pickup, stops } = parseTrip(req.body);
+    const requested = Array.isArray(req.body.vehicleTypes) && req.body.vehicleTypes.length
+      ? req.body.vehicleTypes
+      : pricingService.VEHICLE_TYPES;
+    const types = requested.filter((t) => pricingService.VEHICLE_TYPES.includes(t));
+    const metrics = pricingService.resolveTripMetrics({
+      points: [pickup, ...stops],
+      distanceMeters: req.body.distanceMeters,
+      durationMin: req.body.durationMin,
+    });
+    const quotes = {};
+    for (const vehicleType of types) {
+      const q = await pricingService.calculateTripPrice({
+        ...metrics,
+        stopCount: stops.length - 1,
+        vehicleType,
+      });
+      quotes[vehicleType] = {
+        priceMinor: q.finalPriceMinor,
+        price: q.finalPriceMinor / 100,
+        surgeMultiplier: q.surgeMultiplier,
+      };
+    }
+    ok(res, { quotes, ...metrics, currency: 'AZN' });
+  } catch (e) { next(e); }
+});
+
 router.post('/orders', async (req, res, next) => {
   try {
-    const { pickupLat, pickupLng, destLat, destLng, promoCode, paymentMethod } = req.body;
+    const { promoCode } = req.body;
+    const paymentMethod = req.body.paymentMethod
+      ? String(req.body.paymentMethod).toUpperCase()
+      : req.body.payment
+      ? String(req.body.payment).toUpperCase()
+      : undefined;
+    const { pickup, stops, destination } = parseTrip(req.body);
     const order = await orderService.createOrder({
       customer: req.customer,
       user: req.user,
-      pickup: { lat: pickupLat, lng: pickupLng },
-      destination: { lat: destLat, lng: destLng },
+      pickup,
+      destination,
+      stops,
+      vehicleType: req.body.vehicleType || 'basic',
+      distanceMeters: req.body.distanceMeters,
+      durationMin: req.body.durationMin,
       promoCode,
       paymentMethod,
       idempotencyKey: req.headers['idempotency-key'],
