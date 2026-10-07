@@ -8,6 +8,9 @@ services:
       MONGODB_URI: mongodb://mongo:27017/taxi
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-access}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh}
+      SMS_API_KEY: ${SMS_API_KEY:-}
+      SMS_SENDER_NAME: ${SMS_SENDER_NAME:-1sms.az}
+      OTP_SECRET: ${OTP_SECRET:-change-me-otp}
     depends_on: [mongo]
   worker:
     build: .

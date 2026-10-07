@@ -5,6 +5,9 @@ const { authenticate } = require('../middleware/auth');
 const { ok } = require('../utils/errors');
 const { User } = require('../models');
 const { AppError } = require('../utils/errors');
+const rateLimit = require('express-rate-limit');
+const otpService = require('../services/otp.service');
+const { normalizePhone } = require('../utils/validators');
 
 function validate(schema) {
   return (req, res, next) => {
@@ -15,6 +18,52 @@ function validate(schema) {
   };
 }
 
+// ---- Nömrə + OTP (sərnişin tətbiqi) ----
+const limiterOpts = (max) => ({
+  windowMs: 15 * 60 * 1000,
+  max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res, next) =>
+    next(new AppError('TOO_MANY_REQUESTS', 'Çox sorğu göndərildi, bir az sonra yenidən cəhd edin', 429)),
+});
+const otpRequestLimiter = rateLimit(limiterOpts(10));
+const otpVerifyLimiter = rateLimit(limiterOpts(30));
+
+const phoneField = Joi.string().required().custom((v, helpers) => {
+  const n = normalizePhone(v);
+  return n || helpers.error('any.invalid');
+}).messages({ 'any.invalid': 'Telefon nömrəsi düzgün deyil', 'string.empty': 'Telefon nömrəsi tələb olunur' });
+
+router.post(
+  '/otp/request',
+  otpRequestLimiter,
+  validate(Joi.object({ phone: phoneField })),
+  async (req, res, next) => {
+    try {
+      const result = await otpService.requestOtp(req.body.phone);
+      ok(res, { sent: true, phone: req.body.phone, ...result });
+    } catch (e) { next(e); }
+  }
+);
+
+router.post(
+  '/otp/verify',
+  otpVerifyLimiter,
+  validate(Joi.object({
+    phone: phoneField,
+    code: Joi.string().pattern(/^\d{6}$/).required().messages({
+      'string.pattern.base': 'Kod 6 rəqəmdən ibarət olmalıdır',
+    }),
+  })),
+  async (req, res, next) => {
+    try {
+      ok(res, await authService.loginWithOtp({ ...req.body, ip: req.ip }));
+    } catch (e) { next(e); }
+  }
+);
+
+// ---- Parol ilə giriş: yalnız admin / sürücü üçün ----
 router.post(
   '/register',
   validate(Joi.object({

@@ -2,6 +2,8 @@ const router = require('express').Router();
 const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const orderService = require('../services/order.service');
+const authService = require('../services/auth.service');
+const { parseUsername } = require('../utils/validators');
 const pricingService = require('../services/pricing.service');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
@@ -10,16 +12,54 @@ const { Order, Complaint, OrderIssue, User, Driver } = require('../models');
 router.use(authenticate, requireRoles('CUSTOMER'));
 
 router.get('/me', async (req, res) => {
-  ok(res, { user: req.user, customer: req.customer });
+  ok(res, { user: authService.publicUser(req.user), customer: req.customer });
 });
 
+// Ad, soyad, istifadəçi adı və email sonradan əlavə oluna bilər. İstifadəçi adı boş qala bilməz.
 router.patch('/me', async (req, res, next) => {
   try {
-    const { firstName, lastName } = req.body;
-    if (firstName != null) req.user.firstName = firstName;
-    if (lastName != null) req.user.lastName = lastName;
-    await req.user.save();
-    ok(res, { user: req.user });
+    const { firstName, lastName, username, email } = req.body;
+    const user = req.user;
+
+    if (firstName != null) user.firstName = String(firstName).trim().slice(0, 50);
+    if (lastName != null) user.lastName = String(lastName).trim().slice(0, 50);
+
+    if (username !== undefined) {
+      const parsed = parseUsername(username);
+      if (!parsed) {
+        throw new AppError(
+          'INVALID_USERNAME',
+          'İstifadəçi adı 3–20 simvol olmalıdır (hərf, rəqəm, nöqtə, alt xətt)',
+          400
+        );
+      }
+      const taken = await User.findOne({ usernameLower: parsed.usernameLower, _id: { $ne: user._id } });
+      if (taken) throw new AppError('USERNAME_TAKEN', 'Bu istifadəçi adı artıq tutulub', 409);
+      user.username = parsed.username;
+      user.usernameLower = parsed.usernameLower;
+    }
+
+    if (email !== undefined) {
+      const value = String(email || '').trim().toLowerCase();
+      if (value) {
+        if (value.length > 120 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+          throw new AppError('INVALID_EMAIL', 'Email düzgün deyil', 400);
+        }
+        const used = await User.findOne({ email: value, _id: { $ne: user._id } });
+        if (used) throw new AppError('EMAIL_TAKEN', 'Bu email artıq istifadə olunur', 409);
+        user.email = value;
+      } else {
+        user.email = null;
+      }
+    }
+
+    try {
+      await user.save();
+    } catch (e) {
+      if (e && e.code === 11000) throw new AppError('USERNAME_TAKEN', 'Bu istifadəçi adı artıq tutulub', 409);
+      throw e;
+    }
+    ok(res, { user: authService.publicUser(user) });
   } catch (e) { next(e); }
 });
 

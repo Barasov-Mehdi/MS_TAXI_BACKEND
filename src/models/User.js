@@ -9,7 +9,11 @@ const userSchema = new mongoose.Schema(
     phoneVerifyCode: { type: String, default: null },
     phoneVerifyExpiresAt: { type: Date, default: null },
     email: { type: String, default: null, sparse: true },
-    passwordHash: { type: String, required: true },
+    // İstifadəçi adı sonradan əlavə olunur; sifariş üçün məcburidir.
+    username: { type: String, default: undefined },
+    usernameLower: { type: String, default: undefined },
+    // Sərnişinlər nömrə + OTP ilə girir, parol yoxdur. Parol yalnız admin/sürücü üçündür.
+    passwordHash: { type: String, default: null },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     avatarUrl: { type: String, default: null },
@@ -20,7 +24,14 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Yalnız dəyəri olan sənədlər unikal sayılır (boş username-lər toqquşmur).
+userSchema.index(
+  { usernameLower: 1 },
+  { unique: true, partialFilterExpression: { usernameLower: { $type: 'string' } } }
+);
+
 userSchema.methods.comparePassword = function comparePassword(plain) {
+  if (!this.passwordHash) return Promise.resolve(false);
   return bcrypt.compare(plain, this.passwordHash);
 };
 

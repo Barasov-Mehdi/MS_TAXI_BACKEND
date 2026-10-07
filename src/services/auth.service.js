@@ -4,6 +4,7 @@ const { User, Customer, Driver, RefreshToken } = require('../models');
 const config = require('../config');
 const { AppError } = require('../utils/errors');
 const { AuditLog } = require('../models');
+const otpService = require('./otp.service');
 
 function signAccess(user) {
   return jwt.sign({ sub: String(user._id), role: user.role }, config.jwt.accessSecret, {
@@ -62,7 +63,55 @@ async function login({ phone, password, ip }) {
   };
 }
 
+/**
+ * Nömrə + OTP ilə giriş. Nömrə qeydiyyatda yoxdursa hesab avtomatik yaradılır
+ * (ad, username, email sonradan profildən əlavə olunur).
+ */
+async function loginWithOtp({ phone, code, ip }) {
+  await otpService.verifyOtp(phone, code);
+
+  let user = await User.findOne({ phone });
+  let isNewUser = false;
+
+  if (user) {
+    if (user.role !== 'CUSTOMER') {
+      throw new AppError('ROLE_NOT_ALLOWED', 'Bu nömrə sərnişin hesabı deyil', 403);
+    }
+    if (!user.isActive) throw new AppError('USER_DISABLED', 'Hesab deaktiv edilib', 403);
+    if (!user.phoneVerified) {
+      user.phoneVerified = true;
+      await user.save();
+    }
+  } else {
+    try {
+      user = await User.create({ role: 'CUSTOMER', phone, phoneVerified: true });
+      isNewUser = true;
+    } catch (e) {
+      if (!(e && e.code === 11000)) throw e;
+      user = await User.findOne({ phone }); // paralel qeydiyyat
+      if (!user) throw e;
+    }
+  }
+
+  // Əvvəlki yarımçıq qeydiyyat halında da Customer sənədi olsun.
+  await Customer.updateOne({ userId: user._id }, { $setOnInsert: { userId: user._id } }, { upsert: true });
+
+  await AuditLog.create({
+    actorId: user._id,
+    actorRole: user.role,
+    action: isNewUser ? 'REGISTER_OTP' : 'LOGIN_OTP',
+    ip,
+  });
+  return {
+    accessToken: signAccess(user),
+    refreshToken: await issueRefresh(user),
+    user: publicUser(user),
+    isNewUser,
+  };
+}
+
 async function refresh(refreshToken) {
+  if (!refreshToken) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
   const tokenHash = hashToken(refreshToken);
   const row = await RefreshToken.findOne({ tokenHash, revoked: false });
   if (!row || row.expiresAt < new Date()) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
@@ -100,10 +149,11 @@ function publicUser(user) {
     role: user.role,
     phone: user.phone,
     phoneVerified: user.phoneVerified,
+    username: user.username || null,
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
   };
 }
 
-module.exports = { register, login, refresh, logout, verifyPhone, publicUser, signAccess };
+module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, publicUser, signAccess };

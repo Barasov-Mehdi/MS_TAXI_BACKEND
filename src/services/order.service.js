@@ -35,6 +35,11 @@ async function createOrder({
     if (existing) return existing;
   }
 
+  // Nömrə ilə qeydiyyatdan keçən müştəri sifariş verməzdən əvvəl istifadəçi adı əlavə etməlidir.
+  if (!user.username) {
+    throw new AppError('USERNAME_REQUIRED', 'Sifariş vermək üçün istifadəçi adı əlavə edin', 422);
+  }
+
   const active = await Order.findOne({
     customerId: customer._id,
     status: {

@@ -21,7 +21,7 @@ npm run seed
 npm run dev
 ```
 
-Admin after seed: `+994500000000` / `Admin123!`
+Admin after seed: `+994500000000` / `Admin123!` (parol ilə `/auth/login`)
 
 ## REST (standard envelope)
 
@@ -29,13 +29,22 @@ Success: `{ success, data, error: null, meta }`
 Error: `{ success: false, data: null, error: { code, message }, meta }`
 
 ### Auth
-- POST `/auth/register` `{ role, phone, password, firstName, lastName }`
-- POST `/auth/login` `{ phone, password }`
+
+Sərnişin tətbiqi yalnız **nömrə + SMS OTP** ilə işləyir (parol yoxdur). Nömrə qeydiyyatda yoxdursa, kod təsdiqlənəndə hesab avtomatik yaradılır və dərhal giriş verilir.
+
+- POST `/auth/otp/request` `{ phone }` — 6 rəqəmli kod 1sms.az ilə göndərilir (`+994501234567`, `0501234567`, `501234567` qəbul olunur)
+- POST `/auth/otp/verify` `{ phone, code }` → `{ accessToken, refreshToken, user, isNewUser }`
 - POST `/auth/refresh` `{ refreshToken }`
 - POST `/auth/logout` `{ refreshToken }`
-- POST `/auth/verify-phone` `{ code }` Bearer
-- POST `/auth/forgot-password` `{ phone }`
-- POST `/auth/reset-password` `{ phone, code, password }`
+
+Qaydalar: kod 5 dəq. etibarlıdır, təkistifadəlikdir, 5 səhv cəhddən sonra bloklanır, yenidən göndərmə 60 san. aralıqla, nömrə başına saatda 5 SMS, IP başına limit var. Kod bazada yalnız HMAC hash kimi saxlanılır.
+
+Admin/sürücü üçün köhnə parol endpoint-ləri qalır: POST `/auth/login` `{ phone, password }`, POST `/auth/register`.
+
+**Username sonradan:** `PATCH /customers/me` `{ username, email, firstName, lastName }`.
+Username boşdursa `POST /customers/orders` **422 `USERNAME_REQUIRED`** qaytarır.
+
+SMS: `.env`-də `SMS_API_KEY` (1sms.az). Açar yoxdursa (və production deyilsə) kod konsola yazılır və cavabda `devCode` qayıdır.
 
 ### Customer (`Authorization: Bearer`, role CUSTOMER)
 - GET/PATCH `/customers/me`

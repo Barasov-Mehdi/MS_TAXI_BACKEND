@@ -15,6 +15,7 @@ module.exports = {
   PricingRule: require('./PricingRule'),
   SystemSetting: require('./SystemSetting'),
   RefreshToken: require('./RefreshToken'),
+  OtpCode: require('./OtpCode'),
   Notification: require('./Notification'),
   AuditLog: require('./AuditLog'),
 };
