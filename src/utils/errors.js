@@ -8,6 +8,10 @@ class AppError extends Error {
 }
 
 function errorHandler(err, req, res, next) {
+  // Yanlış formatlı id (məs. "demo") 500 yox, 404 qaytarsın.
+  if (err && err.name === 'CastError') {
+    err = new AppError('NOT_FOUND', 'Qeyd tapılmadı', 404);
+  }
   const status = err.status || 500;
   const code = err.code || 'INTERNAL_ERROR';
   const message = status === 500 && process.env.NODE_ENV === 'production'

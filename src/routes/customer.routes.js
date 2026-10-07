@@ -1,4 +1,5 @@
 const router = require('express').Router();
+const mongoose = require('mongoose');
 const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const orderService = require('../services/order.service');
@@ -10,6 +11,13 @@ const chatService = require('../services/chat.service');
 const { Order, Complaint, OrderIssue, User, Driver } = require('../models');
 
 router.use(authenticate, requireRoles('CUSTOMER'));
+
+router.param('id', (req, res, next, id) => {
+  if (!mongoose.isValidObjectId(id)) {
+    return next(new AppError('ORDER_NOT_FOUND', 'Sifariş tapılmadı', 404));
+  }
+  return next();
+});
 
 router.get('/me', async (req, res) => {
   ok(res, { user: authService.publicUser(req.user), customer: req.customer });
