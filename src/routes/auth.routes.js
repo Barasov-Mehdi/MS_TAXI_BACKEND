@@ -24,6 +24,7 @@ const limiterOpts = (max) => ({
   max,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { trustProxy: true },
   handler: (req, res, next) =>
     next(new AppError('TOO_MANY_REQUESTS', 'Çox sorğu göndərildi, bir az sonra yenidən cəhd edin', 429)),
 });
