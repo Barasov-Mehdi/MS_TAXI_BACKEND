@@ -4,7 +4,7 @@ const bcrypt = require('bcryptjs');
 const userSchema = new mongoose.Schema(
   {
     role: { type: String, enum: ['CUSTOMER', 'DRIVER', 'ADMIN'], required: true, index: true },
-    phone: { type: String, required: true, unique: true, index: true },
+    phone: { type: String, required: true, index: true },
     phoneVerified: { type: Boolean, default: false },
     phoneVerifyCode: { type: String, default: null },
     phoneVerifyExpiresAt: { type: Date, default: null },
