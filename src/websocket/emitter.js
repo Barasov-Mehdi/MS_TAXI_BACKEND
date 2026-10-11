@@ -5,19 +5,8 @@ function setIo(io) {
 }
 
 function emit(room, event, payload) {
-  if (!ioRef) {
-    console.log(`[emit] io hazır deyil, göndərilmədi: ${event} -> ${room}`);
-    return;
-  }
+  if (!ioRef) return;
   ioRef.to(room).emit(event, payload);
-  // Diaqnostika: yalnız vacib hadisələr üçün otaqda neçə soket olduğunu yaz
-  if (event === 'new_order') {
-    ioRef
-      .in(room)
-      .fetchSockets()
-      .then((list) => console.log(`[emit] ${event} -> ${room} soket sayı=${list.length}`))
-      .catch((e) => console.log(`[emit] fetchSockets xətası: ${e.message}`));
-  }
 }
 
 module.exports = {

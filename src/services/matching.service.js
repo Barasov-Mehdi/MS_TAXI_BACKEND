@@ -71,44 +71,20 @@ async function findEligibleDrivers(pickupLng, pickupLat) {
     },
   }).limit(50);
 
-  console.log(
-    `[match] pickup=[${pickupLng},${pickupLat}] maxR=${maxR} nearby=${nearby.length} ` +
-      `stale=${settings.driverLocationStaleSeconds}s maxAcc=${settings.maxLocationAccuracyMeters}m ` +
-      `minBalance=${settings.minimumDriverBalance} negAllowed=${settings.negativeBalanceAllowed}`
-  );
-  if (nearby.length === 0) {
-    const online = await Driver.countDocuments({ isOnline: true, isActive: true, isVerified: true });
-    console.log(`[match] yaxında sürücü yoxdur. isOnline+isActive+isVerified olan sürücü sayı: ${online}`);
-  }
-
   const candidates = [];
   for (const driver of nearby) {
     const gate = driverCanTakeNewOrder(driver, settings, now);
-    if (!gate.ok) {
-      console.log(
-        `[match] driver=${driver._id} RƏDD: ${gate.reason} ` +
-          `accuracy=${driver.locationMeta && driver.locationMeta.accuracy} ` +
-          `locAgeSec=${driver.locationUpdatedAt ? Math.round((now - new Date(driver.locationUpdatedAt)) / 1000) : 'null'} ` +
-          `balanceMinor=${driver.walletBalanceMinor} queued=${(driver.queuedOrderIds || []).length}`
-      );
-      continue;
-    }
+    if (!gate.ok) continue;
 
     const [dlng, dlat] = driver.location.coordinates;
     const dist = haversineMeters(dlat, dlng, pickupLat, pickupLng);
     const radius = Math.min(driver.radiusMeters || settings.defaultDriverRadius, settings.maxDriverRadius);
-    if (dist > radius) {
-      console.log(`[match] driver=${driver._id} RƏDD: RADIUS dist=${Math.round(dist)}m radius=${radius}m`);
-      continue;
-    }
+    if (dist > radius) continue;
 
     let hasActive = Boolean(driver.currentOrderId);
     if (gate.requiresNearDestination) {
       const toDest = await distanceToCurrentDestination(driver);
-      if (toDest == null || toDest > settings.orderQueueActivationDistance) {
-        console.log(`[match] driver=${driver._id} RƏDD: AKTİV_SİFARİŞ toDest=${toDest}`);
-        continue;
-      }
+      if (toDest == null || toDest > settings.orderQueueActivationDistance) continue;
       hasActive = true;
     }
 
@@ -136,7 +112,6 @@ async function findEligibleDrivers(pickupLng, pickupLat) {
   }
 
   candidates.sort((a, b) => b.score - a.score);
-  console.log(`[match] uyğun sürücü sayı: ${candidates.length}`);
   return candidates;
 }
 
