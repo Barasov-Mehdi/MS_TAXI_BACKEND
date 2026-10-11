@@ -162,6 +162,34 @@ router.get('/orders', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Müştərinin hazırda aktiv (bitməmiş) sifarişi; yoxdursa { order: null }.
+// Qeyd: "/orders/:id"-dən əvvəl təyin olunmalıdır.
+router.get('/orders/active', async (req, res, next) => {
+  try {
+    const order = await Order.findOne({
+      customerId: req.customer._id,
+      status: {
+        $nin: ['COMPLETED', 'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'ADMIN_CANCELLED', 'EXPIRED', 'TRIP_COMPLETED', 'RATING_PENDING'],
+      },
+    }).sort({ createdAt: -1 });
+    if (!order) return ok(res, { order: null, driver: null });
+    let driverPublic = null;
+    if (order.driverId) {
+      const d = await Driver.findById(order.driverId).populate('vehicleId');
+      const u = d ? await User.findById(d.userId) : null;
+      driverPublic = d && u ? {
+        id: d._id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        ratingAvg: d.ratingAvg,
+        location: d.location,
+        vehicle: d.vehicleId,
+      } : null;
+    }
+    ok(res, { order, driver: driverPublic });
+  } catch (e) { next(e); }
+});
+
 router.get('/orders/:id', async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
