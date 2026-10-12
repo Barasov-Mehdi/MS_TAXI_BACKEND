@@ -158,7 +158,44 @@ router.post('/orders', async (req, res, next) => {
 
 router.get('/orders', async (req, res, next) => {
   try {
-    const orders = await Order.find({ customerId: req.customer._id }).sort({ createdAt: -1 }).limit(50);
+    const rows = await Order.find({ customerId: req.customer._id }).sort({ createdAt: -1 }).limit(50);
+
+    // Tarixçə üçün: hər sifarişə sürücü məlumatı və müştərinin verdiyi ulduz əlavə olunur.
+    const driverIds = [...new Set(rows.map((o) => o.driverId && String(o.driverId)).filter(Boolean))];
+    const drivers = driverIds.length
+      ? await Driver.find({ _id: { $in: driverIds } }).populate('vehicleId')
+      : [];
+    const users = drivers.length
+      ? await User.find({ _id: { $in: drivers.map((d) => d.userId) } })
+      : [];
+    const userById = new Map(users.map((u) => [String(u._id), u]));
+    const driverById = new Map();
+    drivers.forEach((d) => {
+      const u = userById.get(String(d.userId));
+      driverById.set(String(d._id), {
+        id: d._id,
+        firstName: u && u.firstName,
+        lastName: u && u.lastName,
+        ratingAvg: d.ratingAvg,
+        ratingCount: d.ratingCount,
+        vehicle: d.vehicleId
+          ? {
+            make: d.vehicleId.make,
+            model: d.vehicleId.model,
+            color: d.vehicleId.color,
+            plateNumber: d.vehicleId.plateNumber,
+          }
+          : null,
+      });
+    });
+    const ratings = await Rating.find({ orderId: { $in: rows.map((o) => o._id) } }).select('orderId score');
+    const scoreByOrder = new Map(ratings.map((r) => [String(r.orderId), r.score]));
+
+    const orders = rows.map((o) => ({
+      ...o.toObject(),
+      driver: o.driverId ? driverById.get(String(o.driverId)) || null : null,
+      myRating: scoreByOrder.get(String(o._id)) || null,
+    }));
     ok(res, { orders });
   } catch (e) { next(e); }
 });
@@ -171,6 +208,7 @@ async function publicDriver(order) {
     id: d._id,
     firstName: u.firstName,
     lastName: u.lastName,
+    phone: u.phone,
     ratingAvg: d.ratingAvg,
     location: d.location,
     vehicle: d.vehicleId,
