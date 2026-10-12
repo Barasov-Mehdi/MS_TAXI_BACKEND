@@ -74,6 +74,22 @@ function attachWebsocket(httpServer) {
       } catch (e) { cb && cb({ error: e.message }); }
     });
 
+    // Müştəri xəritəsində yaxınlıqdakı boş sürücülər. Client hər ~10 san təkrar göndərir.
+    socket.on('subscribe_nearby', async (payload) => {
+      try {
+        if (user.role !== 'CUSTOMER') return;
+        const now = Date.now();
+        if (socket.data.nearbyAt && now - socket.data.nearbyAt < 400) return;
+        socket.data.nearbyAt = now;
+        const drivers = await locationService.findNearbyDrivers(payload || {});
+        socket.emit('nearby_drivers', { drivers });
+      } catch (e) {
+        socket.emit('nearby_drivers', { drivers: [] });
+      }
+    });
+
+    socket.on('unsubscribe_nearby', () => {});
+
     socket.on('message_send', async (payload, cb) => {
       try {
         const row = await chatService.sendMessage({
