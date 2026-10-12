@@ -176,6 +176,7 @@ router.get('/orders', async (req, res, next) => {
         id: d._id,
         firstName: u && u.firstName,
         lastName: u && u.lastName,
+        phone: u && u.phone,
         ratingAvg: d.ratingAvg,
         ratingCount: d.ratingCount,
         vehicle: d.vehicleId
