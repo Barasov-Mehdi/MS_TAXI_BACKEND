@@ -8,7 +8,8 @@ const { parseUsername } = require('../utils/validators');
 const pricingService = require('../services/pricing.service');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
-const { Order, Complaint, OrderIssue, User, Driver } = require('../models');
+const { Order, Complaint, OrderIssue, User, Driver, Rating } = require('../models');
+const { OrderStatus } = require('../utils/orderStatus');
 
 router.use(authenticate, requireRoles('CUSTOMER'));
 
@@ -162,31 +163,50 @@ router.get('/orders', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Müştərinin hazırda aktiv (bitməmiş) sifarişi; yoxdursa { order: null }.
-// Qeyd: "/orders/:id"-dən əvvəl təyin olunmalıdır.
+async function publicDriver(order) {
+  if (!order || !order.driverId) return null;
+  const d = await Driver.findById(order.driverId).populate('vehicleId');
+  const u = d ? await User.findById(d.userId) : null;
+  return d && u ? {
+    id: d._id,
+    firstName: u.firstName,
+    lastName: u.lastName,
+    ratingAvg: d.ratingAvg,
+    location: d.location,
+    vehicle: d.vehicleId,
+  } : null;
+}
+
+// Aktiv sifariş. Aktiv səfər yoxdursa, sürücüyə hələ ulduz verilməmiş bitmiş səfər
+// { awaitingRating: true } ilə qaytarılır (CustomerHome-da "qiymətləndir" kartı üçün).
+// Qeyd: '/orders/:id'-dən əvvəl təyin olunmalıdır.
 router.get('/orders/active', async (req, res, next) => {
   try {
-    const order = await Order.findOne({
+    const waiting = [OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING];
+    const inactive = [
+      OrderStatus.COMPLETED,
+      OrderStatus.CUSTOMER_CANCELLED,
+      OrderStatus.DRIVER_CANCELLED,
+      OrderStatus.ADMIN_CANCELLED,
+      OrderStatus.EXPIRED,
+    ];
+    const live = await Order.findOne({
       customerId: req.customer._id,
-      status: {
-        $nin: ['COMPLETED', 'CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'ADMIN_CANCELLED', 'EXPIRED', 'TRIP_COMPLETED', 'RATING_PENDING'],
-      },
+      status: { $nin: [...inactive, ...waiting] },
     }).sort({ createdAt: -1 });
-    if (!order) return ok(res, { order: null, driver: null });
-    let driverPublic = null;
-    if (order.driverId) {
-      const d = await Driver.findById(order.driverId).populate('vehicleId');
-      const u = d ? await User.findById(d.userId) : null;
-      driverPublic = d && u ? {
-        id: d._id,
-        firstName: u.firstName,
-        lastName: u.lastName,
-        ratingAvg: d.ratingAvg,
-        location: d.location,
-        vehicle: d.vehicleId,
-      } : null;
+    if (live) {
+      return ok(res, { order: live, driver: await publicDriver(live), awaitingRating: false });
     }
-    ok(res, { order, driver: driverPublic });
+
+    const pending = await Order.findOne({
+      customerId: req.customer._id,
+      status: { $in: waiting },
+      driverId: { $ne: null },
+    }).sort({ completedAt: -1, createdAt: -1 });
+    if (pending && !pending.ratingId && !(await Rating.exists({ orderId: pending._id }))) {
+      return ok(res, { order: pending, driver: await publicDriver(pending), awaitingRating: true });
+    }
+    return ok(res, { order: null, driver: null, awaitingRating: false });
   } catch (e) { next(e); }
 });
 
@@ -194,19 +214,7 @@ router.get('/orders/:id', async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    let driverPublic = null;
-    if (order.driverId) {
-      const d = await Driver.findById(order.driverId).populate('vehicleId');
-      const u = d ? await User.findById(d.userId) : null;
-      driverPublic = d && u ? {
-        id: d._id,
-        firstName: u.firstName,
-        lastName: u.lastName,
-        ratingAvg: d.ratingAvg,
-        location: d.location,
-        vehicle: d.vehicleId,
-      } : null;
-    }
+    const driverPublic = await publicDriver(order);
     ok(res, { order, driver: driverPublic });
   } catch (e) { next(e); }
 });

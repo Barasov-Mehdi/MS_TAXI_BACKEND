@@ -45,6 +45,9 @@ async function createOrder({
     status: {
       $nin: [
         OrderStatus.COMPLETED,
+        // Səfər bitib, yalnız qiymətləndirmə gözlənilir: yeni sifarişə mane olmur.
+        OrderStatus.TRIP_COMPLETED,
+        OrderStatus.RATING_PENDING,
         OrderStatus.CUSTOMER_CANCELLED,
         OrderStatus.DRIVER_CANCELLED,
         OrderStatus.ADMIN_CANCELLED,
