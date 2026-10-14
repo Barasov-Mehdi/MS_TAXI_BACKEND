@@ -54,7 +54,13 @@ async function distanceToCurrentDestination(driver) {
   return haversineMeters(dlat, dlng, olat, olng);
 }
 
-async function findEligibleDrivers(pickupLng, pickupLat) {
+/**
+ * Sifarişə uyğun sürücüləri tapır və SIRALAYIR.
+ * Sıralama: əvvəlcə boş sürücülər, sonra sifarişi bitirməyə yaxın olanlar; hər qrupda pickup-a ən yaxın birinci.
+ * excludeIds - artıq təklif olunmuş və ya başqa sifarişdə təklif gözləyən sürücülər.
+ * (calculateScore saxlanılıb, lakin dispatch sıralaması üçün istifadə olunmur: sifarişi ən yaxın sürücü almalıdır.)
+ */
+async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {}) {
   const settings = await getSettings();
   const maxR = settings.maxDriverRadius || 5000;
   const now = new Date();
@@ -63,6 +69,7 @@ async function findEligibleDrivers(pickupLng, pickupLat) {
     isOnline: true,
     isActive: true,
     isVerified: true,
+    ...(excludeIds.length ? { _id: { $nin: excludeIds } } : {}),
     location: {
       $nearSphere: {
         $geometry: { type: 'Point', coordinates: [pickupLng, pickupLat] },
@@ -111,7 +118,10 @@ async function findEligibleDrivers(pickupLng, pickupLat) {
     });
   }
 
-  candidates.sort((a, b) => b.score - a.score);
+  candidates.sort((a, b) => {
+    if (a.hasActiveOrder !== b.hasActiveOrder) return a.hasActiveOrder ? 1 : -1;
+    return a.distanceMeters - b.distanceMeters;
+  });
   return candidates;
 }
 

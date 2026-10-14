@@ -20,7 +20,12 @@ const DEFAULTS = {
   matchingWeightOnline: 0.1,
   matchingWeightPriority: 0.1,
   matchingWeightActivePenalty: 0.05,
-  orderSearchTimeoutSeconds: 120,
+  // Sifariş sürücüyə nə qədər müddət (san) təklif olunur; bitəndə növbəti sürücüyə keçir
+  driverOfferSeconds: 25,
+  // Heç bir sürücü qəbul etməsə, sifariş bu müddətdən (san) sonra ləğv olunur (3 dəqiqə)
+  orderDispatchTimeoutSeconds: 180,
+  // Uyğun sürücü tapılmadıqda təkrar axtarış intervalı (san)
+  dispatchRetrySeconds: 3,
   cancellationFeeMinor: 0,
 };
 

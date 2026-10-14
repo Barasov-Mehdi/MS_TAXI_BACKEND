@@ -10,6 +10,7 @@ const config = require('./config');
 const { errorHandler } = require('./utils/errors');
 const { attachWebsocket } = require('./websocket');
 const { seedDefaults } = require('./services/settings.service');
+const { startDispatchLoop } = require('./queues/dispatchLoop');
 
 const app = express();
 // Heroku (and most reverse proxies) sets X-Forwarded-For. express-rate-limit
@@ -53,6 +54,7 @@ async function start() {
   await seedDefaults();
   server.listen(config.port, () => {
     console.log(`taxi-backend listening on :${config.port}`);
+    startDispatchLoop();
   });
 }
 

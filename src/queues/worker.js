@@ -1,27 +1,11 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const config = require('../config');
-const { Order, Driver } = require('../models');
-const { OrderStatus } = require('../utils/orderStatus');
+const { Driver } = require('../models');
 const { getSettings } = require('../services/settings.service');
-const realtime = require('../websocket/emitter');
 
-async function expireStaleOrders() {
-  const settings = await getSettings();
-  const cutoff = new Date(Date.now() - (settings.orderSearchTimeoutSeconds || 120) * 1000);
-  const stale = await Order.find({
-    status: OrderStatus.SEARCHING_DRIVER,
-    createdAt: { $lt: cutoff },
-  });
-  for (const order of stale) {
-    order.status = OrderStatus.EXPIRED;
-    await order.save();
-    realtime.toCustomer(order.customerId, 'order_status_changed', {
-      orderId: order._id,
-      status: OrderStatus.EXPIRED,
-    });
-  }
-}
+// Qeyd: sifariş dispatch-i (sürücüyə 25 san, növbəti sürücüyə keçid, 3 dəq ləğv) burada DEYİL,
+// web serverin içində (queues/dispatchLoop.js) işləyir - çünki yalnız orada Socket.IO əlçatandır.
 
 async function markStaleDrivers() {
   const settings = await getSettings();
@@ -36,7 +20,6 @@ async function main() {
   await mongoose.connect(config.mongoUri);
   console.log('worker connected');
   setInterval(() => {
-    expireStaleOrders().catch((e) => console.error(e));
     markStaleDrivers().catch((e) => console.error(e));
   }, 15000);
 }
@@ -48,4 +31,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { expireStaleOrders, markStaleDrivers };
+module.exports = { markStaleDrivers };

@@ -34,7 +34,18 @@ const orderSchema = new mongoose.Schema(
       surgeMultiplier: Number,
       finalPriceMinor: Number,
     },
+    // Ardıcıl dispatch: sifariş eyni anda yalnız BİR sürücüyə təklif olunur.
+    // offeredToDriverIds - artıq təklif olunmuş (qəbul etməmiş) sürücülərin siyahısı, təkrar təklif olunmur.
     offeredToDriverIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Driver' }],
+    currentOfferDriverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver', default: null },
+    // Cari təklifin bitmə vaxtı (sürücüyə ayrılan müddətin sonu)
+    offerExpiresAt: { type: Date, default: null },
+    // Bu vaxta qədər heç bir sürücü qəbul etməsə, sifariş avtomatik ləğv olunur
+    searchDeadlineAt: { type: Date, default: null },
+    // Worker-in sifarişə növbəti dəfə nə vaxt baxacağı (təklifin bitməsi və ya sürücü tapılmadıqda təkrar cəhd)
+    dispatchDueAt: { type: Date, default: null },
+    // Optimistic lock: eyni anda iki proseslərin sifarişi iki dəfə növbəti sürücüyə keçirməsinin qarşısını alır
+    dispatchSeq: { type: Number, default: 0 },
     acceptedAt: Date,
     startedAt: Date,
     completedAt: Date,
@@ -53,5 +64,7 @@ orderSchema.index({ pickup: '2dsphere' });
 orderSchema.index({ destination: '2dsphere' });
 orderSchema.index({ customerId: 1, createdAt: -1 });
 orderSchema.index({ driverId: 1, status: 1 });
+orderSchema.index({ status: 1, dispatchDueAt: 1 });
+orderSchema.index({ status: 1, currentOfferDriverId: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

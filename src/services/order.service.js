@@ -6,6 +6,7 @@ const { AppError } = require('../utils/errors');
 const pricingService = require('./pricing.service');
 const promoService = require('./promo.service');
 const matchingService = require('./matching.service');
+const dispatchService = require('./dispatch.service');
 const walletService = require('./wallet.service');
 const { getSettings } = require('./settings.service');
 const realtime = require('../websocket/emitter');
@@ -13,7 +14,7 @@ const realtime = require('../websocket/emitter');
 async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, reason, session) {
   await OrderStatusHistory.create(
     [{ orderId, fromStatus, toStatus, actorRole, actorId, reason }],
-    { session }
+    session ? { session } : {}
   );
 }
 
@@ -79,11 +80,15 @@ async function createOrder({
   }
   const priced = await pricingService.calculateTripPrice({ ...tripInput, promoDiscountMinor: discountMinor });
 
+  const dispatchFields = await dispatchService.initialDispatchFields();
+
+  let order;
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const [order] = await Order.create(
+    [order] = await Order.create(
       [{
+        ...dispatchFields,
         customerId: customer._id,
         status: OrderStatus.SEARCHING_DRIVER,
         pickup: point(pickup.lng, pickup.lat),
@@ -108,33 +113,20 @@ async function createOrder({
 
     await recordHistory(order._id, OrderStatus.CREATED, OrderStatus.SEARCHING_DRIVER, 'CUSTOMER', user._id, null, session);
     await session.commitTransaction();
-
-    await offerToDrivers(order);
-    return order;
   } catch (e) {
     await session.abortTransaction();
     throw e;
   } finally {
     session.endSession();
   }
-}
 
-async function offerToDrivers(order) {
-  const [plng, plat] = order.pickup.coordinates;
-  const candidates = await matchingService.findEligibleDrivers(plng, plat);
-  const ids = candidates.map((c) => c.driver._id);
-  await Order.updateOne({ _id: order._id }, { $set: { offeredToDriverIds: ids } });
-  for (const c of candidates) {
-    realtime.toDriver(c.driver._id, 'new_order', {
-      orderId: order._id,
-      pickup: order.pickup,
-      destination: order.destination,
-      distanceMeters: order.distanceMeters,
-      priceMinor: order.pricingSnapshot.finalPriceMinor,
-      queued: c.hasActiveOrder,
-    });
+  // Sifariş artıq commit olunub: dispatch xətası sifarişi itirməməlidir (worker təkrar cəhd edəcək).
+  try {
+    await dispatchService.startDispatch(order._id);
+  } catch (e) {
+    console.error('initial dispatch failed for order', String(order._id), e);
   }
-  return candidates;
+  return (await Order.findById(order._id)) || order;
 }
 
 async function acceptOrder({ orderId, driver, user, idempotencyKey }) {
@@ -154,6 +146,11 @@ async function acceptOrder({ orderId, driver, user, idempotencyKey }) {
       throw new AppError('ORDER_NOT_AVAILABLE', 'Order is no longer available', 409);
     }
 
+    // Ardıcıl dispatch: sifarişi yalnız hazırda təklif alan sürücü qəbul edə bilər.
+    if (!order.currentOfferDriverId || String(order.currentOfferDriverId) !== String(driver._id)) {
+      throw new AppError('OFFER_NOT_ACTIVE', 'Offer expired or not assigned to this driver', 409);
+    }
+
     const freshDriver = await Driver.findById(driver._id).session(session);
     const gate = matchingService.driverCanTakeNewOrder(freshDriver, settings);
     if (!gate.ok) throw new AppError('DRIVER_NOT_ELIGIBLE', gate.reason, 409);
@@ -171,14 +168,22 @@ async function acceptOrder({ orderId, driver, user, idempotencyKey }) {
     assertTransition(order.status, nextStatus);
 
     const updated = await Order.findOneAndUpdate(
-      { _id: order._id, status: OrderStatus.SEARCHING_DRIVER, driverId: null },
+      {
+        _id: order._id,
+        status: OrderStatus.SEARCHING_DRIVER,
+        driverId: null,
+        currentOfferDriverId: freshDriver._id,
+      },
       {
         $set: {
           driverId: freshDriver._id,
           status: nextStatus,
           acceptedAt: new Date(),
+          currentOfferDriverId: null,
+          offerExpiresAt: null,
+          dispatchDueAt: null,
         },
-        $inc: { version: 1 },
+        $inc: { version: 1, dispatchSeq: 1 },
       },
       { session, new: true }
     );
@@ -206,11 +211,6 @@ async function acceptOrder({ orderId, driver, user, idempotencyKey }) {
     await recordHistory(updated._id, OrderStatus.SEARCHING_DRIVER, updated.status, 'DRIVER', user._id, null, session);
     await session.commitTransaction();
 
-    const others = (order.offeredToDriverIds || []).filter((id) => String(id) !== String(freshDriver._id));
-    for (const id of others) {
-      realtime.toDriver(id, 'order_taken_by_other_driver', { orderId: updated._id });
-    }
-
     if (queued) {
       realtime.toCustomer(updated.customerId, 'order_status_changed', {
         orderId: updated._id,
@@ -233,11 +233,8 @@ async function acceptOrder({ orderId, driver, user, idempotencyKey }) {
 }
 
 async function rejectOrder({ orderId, driver }) {
-  await Order.updateOne(
-    { _id: orderId, status: OrderStatus.SEARCHING_DRIVER },
-    { $pull: { offeredToDriverIds: driver._id } }
-  );
-  return { rejected: true };
+  // Sifariş dərhal növbəti ən yaxın sürücüyə keçir.
+  return dispatchService.rejectOffer({ orderId, driver });
 }
 
 async function transitionByDriver({ orderId, driver, user, toStatus, extra = {} }) {
@@ -367,6 +364,41 @@ async function cancelOrder({ order, user, role, reason }) {
   if (order.status === to) return order;
   assertTransition(order.status, to);
 
+  // Axtarış mərhələsində (sürücü hələ qəbul etməyib) ləğv: sifariş KEÇMİR, hamıdan dərhal silinir.
+  // Əməliyyat atomikdir: eyni anda sürücü qəbul edibsə və ya dispatch sifarişi irəli keçiribsə, nəticə səhv olmur.
+  if (order.status === OrderStatus.SEARCHING_DRIVER) {
+    const before = await Order.findOneAndUpdate(
+      { _id: order._id, status: OrderStatus.SEARCHING_DRIVER },
+      {
+        $set: {
+          status: to,
+          currentOfferDriverId: null,
+          offerExpiresAt: null,
+          dispatchDueAt: null,
+          cancelledAt: new Date(),
+          cancelReason: reason,
+          cancelledBy: role,
+        },
+        $inc: { version: 1, dispatchSeq: 1 },
+      },
+      { new: false }
+    );
+    if (!before) {
+      throw new AppError('ORDER_STATE_CHANGED', 'Order state changed, please refresh', 409);
+    }
+    await recordHistory(order._id, OrderStatus.SEARCHING_DRIVER, to, role, user._id, reason);
+
+    // Sifarişi o an görən sürücüyə (varsa) real vaxtda bildirilir ki, kart dərhal yoxa çıxsın.
+    const payload = { orderId: order._id, status: to, reason };
+    if (before.currentOfferDriverId) {
+      realtime.toDriver(before.currentOfferDriverId, 'order_cancelled', payload);
+      realtime.toDriver(before.currentOfferDriverId, 'order_offer_expired', { orderId: order._id, reason: 'CANCELLED' });
+    }
+    realtime.toOrder(order._id, 'order_cancelled', payload);
+    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id });
+    return Order.findById(order._id);
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -457,6 +489,11 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
       );
     }
     const from = order.status;
+    const offeredDriverId = order.currentOfferDriverId;
+    order.currentOfferDriverId = null;
+    order.offerExpiresAt = null;
+    order.dispatchDueAt = null;
+    order.dispatchSeq = (order.dispatchSeq || 0) + 1;
     order.driverId = newDriverId;
     order.status = OrderStatus.DRIVER_ASSIGNED;
     order.version += 1;
@@ -466,6 +503,9 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
     await session.commitTransaction();
     realtime.toOrder(order._id, 'order_status_changed', { orderId: order._id, status: order.status, reassigned: true });
     realtime.toDriver(newDriverId, 'new_order', { orderId: order._id, reassigned: true });
+    if (offeredDriverId && String(offeredDriverId) !== String(newDriverId)) {
+      realtime.toDriver(offeredDriverId, 'order_offer_expired', { orderId: order._id, reason: 'REASSIGNED' });
+    }
     return order;
   } catch (e) {
     await session.abortTransaction();
@@ -477,7 +517,6 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
 
 module.exports = {
   createOrder,
-  offerToDrivers,
   acceptOrder,
   rejectOrder,
   startTrip,
