@@ -1,8 +1,10 @@
 const router = require('express').Router();
+const mongoose = require('mongoose');
 const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
+const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
 const { Order, Vehicle, WalletTransaction, OrderIssue } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
@@ -46,6 +48,8 @@ router.post('/offline', async (req, res, next) => {
     req.driver.isOnline = false;
     req.driver.onlineSince = null;
     await req.driver.save();
+    // Üzərində gözləyən təklif varsa, 20 san gözləmədən növbəti sürücüyə keçir.
+    await dispatchService.advanceOffersOfDriver(req.driver._id, 'DRIVER_OFFLINE');
     ok(res, { driver: req.driver });
   } catch (e) { next(e); }
 });
@@ -86,13 +90,26 @@ router.get('/orders', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Tətbiq yenidən açılanda / bağlantı bərpa olunanda: gözləyən (vaxtı bitməmiş) təklif varsa qaytarılır.
+router.get('/offers/current', async (req, res, next) => {
+  try {
+    ok(res, { offer: await dispatchService.getPendingOfferForDriver(req.driver) });
+  } catch (e) { next(e); }
+});
+
+router.param('id', (req, res, next, id) => {
+  if (!mongoose.isValidObjectId(id)) {
+    return next(new AppError('ORDER_NOT_FOUND', 'Order not found', 404));
+  }
+  return next();
+});
+
 router.post('/orders/:id/accept', async (req, res, next) => {
   try {
     const order = await orderService.acceptOrder({
       orderId: req.params.id,
       driver: req.driver,
       user: req.user,
-      idempotencyKey: req.headers['idempotency-key'],
     });
     ok(res, { order });
   } catch (e) { next(e); }

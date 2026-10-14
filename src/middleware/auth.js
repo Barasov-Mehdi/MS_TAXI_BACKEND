@@ -12,8 +12,14 @@ async function authenticate(req, res, next) {
     const user = await User.findById(payload.sub);
     if (!user || !user.isActive) throw new AppError('UNAUTHORIZED', 'Invalid token', 401);
     req.user = user;
-    if (user.role === 'CUSTOMER') req.customer = await Customer.findOne({ userId: user._id });
-    if (user.role === 'DRIVER') req.driver = await Driver.findOne({ userId: user._id });
+    if (user.role === 'CUSTOMER') {
+      req.customer = await Customer.findOne({ userId: user._id });
+      if (!req.customer) throw new AppError('PROFILE_NOT_FOUND', 'Customer profile not found', 403);
+    }
+    if (user.role === 'DRIVER') {
+      req.driver = await Driver.findOne({ userId: user._id });
+      if (!req.driver) throw new AppError('PROFILE_NOT_FOUND', 'Driver profile not found', 403);
+    }
     next();
   } catch (e) {
     if (e instanceof AppError) return next(e);

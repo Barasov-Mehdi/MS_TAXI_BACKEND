@@ -21,7 +21,9 @@ const DEFAULTS = {
   matchingWeightPriority: 0.1,
   matchingWeightActivePenalty: 0.05,
   // Sifariş sürücüyə nə qədər müddət (san) təklif olunur; bitəndə növbəti sürücüyə keçir
-  driverOfferSeconds: 25,
+  driverOfferSeconds: 20,
+  // Təklif bitdikdən sonra şəbəkə gecikməsi üçün qəbula verilən güzəşt (ms)
+  offerAcceptGraceMs: 1500,
   // Heç bir sürücü qəbul etməsə, sifariş bu müddətdən (san) sonra ləğv olunur (3 dəqiqə)
   orderDispatchTimeoutSeconds: 180,
   // Uyğun sürücü tapılmadıqda təkrar axtarış intervalı (san)
@@ -56,6 +58,9 @@ async function seedDefaults() {
   for (const [key, value] of Object.entries(DEFAULTS)) {
     await SystemSetting.updateOne({ key }, { $setOnInsert: { key, value } }, { upsert: true });
   }
+  // Köhnə default (25 san) bazada qalıbsa, 20 saniyəyə keçir. Admin əl ilə başqa dəyər qoyubsa toxunulmur.
+  await SystemSetting.updateOne({ key: 'driverOfferSeconds', value: 25 }, { $set: { value: 20 } });
+  invalidateSettingsCache();
 }
 
 module.exports = { getSettings, setSetting, invalidateSettingsCache, seedDefaults, DEFAULTS };

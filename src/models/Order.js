@@ -53,7 +53,7 @@ const orderSchema = new mongoose.Schema(
     cancelReason: String,
     cancelledBy: String,
     version: { type: Number, default: 0 },
-    idempotencyKey: { type: String, default: null, index: true },
+    idempotencyKey: { type: String, default: null },
     commissionApplied: { type: Boolean, default: false },
     ratingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Rating', default: null },
   },
@@ -66,5 +66,10 @@ orderSchema.index({ customerId: 1, createdAt: -1 });
 orderSchema.index({ driverId: 1, status: 1 });
 orderSchema.index({ status: 1, dispatchDueAt: 1 });
 orderSchema.index({ status: 1, currentOfferDriverId: 1 });
+// Eyni Idempotency-Key ilə paralel sorğular iki sifariş yarada bilməsin.
+orderSchema.index(
+  { customerId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Order', orderSchema);

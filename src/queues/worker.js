@@ -1,20 +1,14 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const config = require('../config');
-const { Driver } = require('../models');
-const { getSettings } = require('../services/settings.service');
+const dispatchService = require('../services/dispatch.service');
 
-// Qeyd: sifariş dispatch-i (sürücüyə 25 san, növbəti sürücüyə keçid, 3 dəq ləğv) burada DEYİL,
-// web serverin içində (queues/dispatchLoop.js) işləyir - çünki yalnız orada Socket.IO əlçatandır.
+// Qeyd: sifariş dispatch-i (sürücüyə 20 san, növbəti sürücüyə keçid, 3 dəq ləğv) və köhnəlmiş sürücülərin
+// offline edilməsi artıq web serverin içində (queues/dispatchLoop.js) işləyir - çünki yalnız orada Socket.IO əlçatandır.
+// Bu fayl ayrıca prosesdə işlədilərsə, yalnız sürücü sweep-ini təkrarlayır (təhlükəsizdir: əməliyyat idempotentdir,
+// lakin bildirişlər yalnız web prosesindən gedə bildiyi üçün tövsiyə olunan yol web prosesinə güvənməkdir).
 
-async function markStaleDrivers() {
-  const settings = await getSettings();
-  const cutoff = new Date(Date.now() - (settings.driverLocationStaleSeconds || 45) * 1000);
-  await Driver.updateMany(
-    { isOnline: true, locationUpdatedAt: { $lt: cutoff } },
-    { $set: { isOnline: false } }
-  );
-}
+const markStaleDrivers = () => dispatchService.sweepStaleDrivers();
 
 async function main() {
   await mongoose.connect(config.mongoUri);

@@ -68,4 +68,15 @@ async function consumePromo(session, promo, customerId, orderId, discountMinor) 
   return usage[0];
 }
 
-module.exports = { validateAndQuote, consumePromo, computeDiscount };
+/**
+ * Sifariş sürücü tapılmadığı üçün ləğv/expire olduqda promo istifadəsini geri qaytarır.
+ * İdempotentdir: istifadə qeydi yalnız bir dəfə silinir və sayğac yalnız onda azaldılır.
+ */
+async function releasePromoForOrder(orderId) {
+  const usage = await PromoUsage.findOneAndDelete({ orderId });
+  if (!usage) return false;
+  await PromoCode.updateOne({ _id: usage.promoId, usedCount: { $gt: 0 } }, { $inc: { usedCount: -1 } });
+  return true;
+}
+
+module.exports = { validateAndQuote, consumePromo, computeDiscount, releasePromoForOrder };

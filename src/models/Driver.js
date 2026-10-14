@@ -26,6 +26,9 @@ const driverSchema = new mongoose.Schema(
     currentOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     queuedOrderIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Order' }],
     walletBalanceMinor: { type: Number, default: 0 },
+    // Dispatch: sürücü eyni anda yalnız bir sifariş təklifi ala bilər (atomik kilid, özü bitir).
+    offerOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+    offerLockUntil: { type: Date, default: null },
   },
   { timestamps: true }
 );

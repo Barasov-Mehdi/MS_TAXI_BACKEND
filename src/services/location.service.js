@@ -6,9 +6,39 @@ const realtime = require('../websocket/emitter');
 const { Order } = require('../models');
 const matchingService = require('./matching.service');
 
+const { AppError } = require('../utils/errors');
+
+/** Koordinatları yoxlayır: NaN/aralıqdan kənar dəyər 2dsphere indeksini korlayır və sorğunu çökdürür. */
+function parseCoordinates(payload) {
+  const latitude = Number(payload && payload.latitude);
+  const longitude = Number(payload && payload.longitude);
+  if (
+    payload == null ||
+    payload.latitude == null ||
+    payload.longitude == null ||
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    Math.abs(latitude) > 90 ||
+    Math.abs(longitude) > 180
+  ) {
+    throw new AppError('INVALID_LOCATION', 'Invalid coordinates', 400);
+  }
+  return { latitude, longitude };
+}
+
+const finiteOrNull = (v) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+
 async function updateDriverLocation(driver, payload) {
-  const { latitude, longitude, accuracy, heading, speed, timestamp } = payload;
-  const ts = timestamp ? new Date(timestamp) : new Date();
+  if (!driver) throw new AppError('PROFILE_NOT_FOUND', 'Driver profile not found', 403);
+  const { latitude, longitude } = parseCoordinates(payload);
+  const accuracy = finiteOrNull(payload.accuracy);
+  const heading = finiteOrNull(payload.heading);
+  const speed = finiteOrNull(payload.speed);
+  let ts = payload.timestamp ? new Date(payload.timestamp) : new Date();
+  if (Number.isNaN(ts.getTime())) ts = new Date();
+  // Gələcəkdən gələn timestamp sonrakı bütün yeniləmələri "köhnə" saydırmasın.
+  if (ts.getTime() > Date.now() + 60_000) ts = new Date();
+
   if (driver.locationMeta && driver.locationMeta.timestamp && ts < driver.locationMeta.timestamp) {
     return driver;
   }
@@ -16,10 +46,21 @@ async function updateDriverLocation(driver, payload) {
   if (accuracy != null && accuracy > (settings.maxLocationAccuracyMeters || 80) * 3) {
     return driver;
   }
+  const now = new Date();
+  // Atomik yeniləmə: tam sənədi save() etmirik ki, paralel dəyişikliklər (currentOrderId, isOnline) üstünə yazılmasın.
+  await Driver.updateOne(
+    { _id: driver._id },
+    {
+      $set: {
+        location: point(longitude, latitude),
+        locationMeta: { accuracy, heading, speed, timestamp: ts },
+        locationUpdatedAt: now,
+      },
+    }
+  );
   driver.location = point(longitude, latitude);
   driver.locationMeta = { accuracy, heading, speed, timestamp: ts };
-  driver.locationUpdatedAt = new Date();
-  await driver.save();
+  driver.locationUpdatedAt = now;
 
   if (driver.currentOrderId) {
     const order = await Order.findById(driver.currentOrderId);
@@ -45,7 +86,8 @@ async function updateDriverLocation(driver, payload) {
 }
 
 async function updateCustomerLocation(customer, payload) {
-  const { latitude, longitude } = payload;
+  if (!customer) throw new AppError('PROFILE_NOT_FOUND', 'Customer profile not found', 403);
+  const { latitude, longitude } = parseCoordinates(payload);
   customer.location = point(longitude, latitude);
   customer.locationUpdatedAt = new Date();
   await customer.save();

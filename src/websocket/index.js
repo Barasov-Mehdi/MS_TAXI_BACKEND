@@ -5,10 +5,16 @@ const { User, Customer, Driver, Order } = require('../models');
 const { setIo } = require('./emitter');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
+const dispatchService = require('../services/dispatch.service');
+
+const LOCATION_MIN_INTERVAL_MS = 400; // eyni soketdən çox sıx konum yeniləməsi atılır
 
 function attachWebsocket(httpServer) {
   const io = new Server(httpServer, {
     cors: { origin: config.corsOrigin, credentials: true },
+    maxHttpBufferSize: 100_000, // böyük payload ilə yaddaş doldurma hücumunun qarşısı
+    pingInterval: 10_000,
+    pingTimeout: 10_000,
   });
 
   setIo(io);
@@ -27,52 +33,75 @@ function attachWebsocket(httpServer) {
     }
   });
 
+  // Hadisə handler-ləri async-dir: tutulmamış rejection Node 15+-da bütün prosesi dayandırır.
+  // Hamısı bu sarğı ilə qorunur.
+  const safe = (fn) => async (...args) => {
+    const cb = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null;
+    try {
+      await fn(...args);
+    } catch (e) {
+      if (!(e && e.status && e.status < 500)) console.error('[ws] handler error', e && e.stack ? e.stack : e);
+      if (cb) cb({ error: e && e.code ? e.code : 'INTERNAL_ERROR' });
+    }
+  };
+
   io.on('connection', async (socket) => {
     const user = socket.user;
-    socket.join(`${user.role.toLowerCase()}:${user._id}`);
-    if (user.role === 'CUSTOMER') {
-      const c = await Customer.findOne({ userId: user._id });
-      if (c) socket.join(`customer:${c._id}`);
-    }
-    if (user.role === 'DRIVER') {
-      const d = await Driver.findOne({ userId: user._id });
-      if (d) socket.join(`driver:${d._id}`);
-    }
-    if (user.role === 'ADMIN') socket.join('admin:operations');
-
-    socket.on('join_order', async (orderId, cb) => {
-      const order = await Order.findById(orderId);
-      if (!order) return cb && cb({ error: 'ORDER_NOT_FOUND' });
+    try {
+      socket.join(`${user.role.toLowerCase()}:${user._id}`);
       if (user.role === 'CUSTOMER') {
         const c = await Customer.findOne({ userId: user._id });
-        if (!c || String(order.customerId) !== String(c._id)) return cb && cb({ error: 'FORBIDDEN' });
+        if (c) socket.join(`customer:${c._id}`);
+      }
+      if (user.role === 'DRIVER') {
+        const d = await Driver.findOne({ userId: user._id });
+        if (d) {
+          socket.join(`driver:${d._id}`);
+          // Bağlantı qopub bərpa olubsa: vaxtı bitməmiş təklif itməsin.
+          const pending = await dispatchService.getPendingOfferForDriver(d);
+          if (pending) socket.emit('new_order', pending);
+        }
+      }
+      if (user.role === 'ADMIN') socket.join('admin:operations');
+    } catch (e) {
+      console.error('[ws] connection setup failed', e);
+    }
+
+    socket.on('join_order', safe(async (orderId, cb) => {
+      const reply = typeof cb === 'function' ? cb : () => {};
+      const order = await Order.findById(orderId);
+      if (!order) return reply({ error: 'ORDER_NOT_FOUND' });
+      if (user.role === 'CUSTOMER') {
+        const c = await Customer.findOne({ userId: user._id });
+        if (!c || String(order.customerId) !== String(c._id)) return reply({ error: 'FORBIDDEN' });
       } else if (user.role === 'DRIVER') {
         const d = await Driver.findOne({ userId: user._id });
-        if (!d || String(order.driverId) !== String(d._id)) return cb && cb({ error: 'FORBIDDEN' });
+        if (!d || String(order.driverId) !== String(d._id)) return reply({ error: 'FORBIDDEN' });
       } else if (user.role !== 'ADMIN') {
-        return cb && cb({ error: 'FORBIDDEN' });
+        return reply({ error: 'FORBIDDEN' });
       }
       socket.join(`order:${orderId}`);
-      cb && cb({ ok: true, status: order.status });
-    });
+      reply({ ok: true, status: order.status });
+    }));
 
-    socket.on('driver_location_update', async (payload, cb) => {
-      try {
-        if (user.role !== 'DRIVER') throw new Error('FORBIDDEN');
-        const d = await Driver.findOne({ userId: user._id });
-        await locationService.updateDriverLocation(d, payload);
-        cb && cb({ ok: true });
-      } catch (e) { cb && cb({ error: e.message }); }
-    });
+    socket.on('driver_location_update', safe(async (payload, cb) => {
+      if (user.role !== 'DRIVER') throw Object.assign(new Error('FORBIDDEN'), { code: 'FORBIDDEN', status: 403 });
+      const now = Date.now();
+      if (socket.data.locAt && now - socket.data.locAt < LOCATION_MIN_INTERVAL_MS) {
+        return typeof cb === 'function' && cb({ ok: true, throttled: true });
+      }
+      socket.data.locAt = now;
+      const d = await Driver.findOne({ userId: user._id });
+      await locationService.updateDriverLocation(d, payload);
+      if (typeof cb === 'function') cb({ ok: true });
+    }));
 
-    socket.on('customer_location_update', async (payload, cb) => {
-      try {
-        if (user.role !== 'CUSTOMER') throw new Error('FORBIDDEN');
-        const c = await Customer.findOne({ userId: user._id });
-        await locationService.updateCustomerLocation(c, payload);
-        cb && cb({ ok: true });
-      } catch (e) { cb && cb({ error: e.message }); }
-    });
+    socket.on('customer_location_update', safe(async (payload, cb) => {
+      if (user.role !== 'CUSTOMER') throw Object.assign(new Error('FORBIDDEN'), { code: 'FORBIDDEN', status: 403 });
+      const c = await Customer.findOne({ userId: user._id });
+      await locationService.updateCustomerLocation(c, payload);
+      if (typeof cb === 'function') cb({ ok: true });
+    }));
 
     // Müştəri xəritəsində yaxınlıqdakı boş sürücülər. Client hər ~10 san təkrar göndərir.
     socket.on('subscribe_nearby', async (payload) => {
@@ -90,15 +119,13 @@ function attachWebsocket(httpServer) {
 
     socket.on('unsubscribe_nearby', () => {});
 
-    socket.on('message_send', async (payload, cb) => {
-      try {
-        const row = await chatService.sendMessage({
-          orderId: payload.orderId, senderUser: user, receiverUserId: payload.receiverId,
-          message: payload.message, clientMessageId: payload.clientMessageId,
-        });
-        cb && cb({ ok: true, message: row });
-      } catch (e) { cb && cb({ error: e.message }); }
-    });
+    socket.on('message_send', safe(async (payload, cb) => {
+      const row = await chatService.sendMessage({
+        orderId: payload.orderId, senderUser: user, receiverUserId: payload.receiverId,
+        message: payload.message, clientMessageId: payload.clientMessageId,
+      });
+      if (typeof cb === 'function') cb({ ok: true, message: row });
+    }));
   });
 
   return io;

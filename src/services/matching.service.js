@@ -70,6 +70,8 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
     isActive: true,
     isVerified: true,
     ...(excludeIds.length ? { _id: { $nin: excludeIds } } : {}),
+    // Başqa sifariş təklifi gözləyən (kilidli) sürücülər atlanır
+    $or: [{ offerLockUntil: null }, { offerLockUntil: { $lte: now } }],
     location: {
       $nearSphere: {
         $geometry: { type: 'Point', coordinates: [pickupLng, pickupLat] },

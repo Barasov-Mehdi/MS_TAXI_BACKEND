@@ -26,6 +26,7 @@ const ALLOWED_TRANSITIONS = {
     OrderStatus.QUEUED,
     OrderStatus.DRIVER_FINISHING_CURRENT_TRIP,
     OrderStatus.CUSTOMER_CANCELLED,
+    OrderStatus.ADMIN_CANCELLED,
     OrderStatus.EXPIRED,
   ],
   [OrderStatus.DRIVER_ASSIGNED]: [
