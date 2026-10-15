@@ -173,14 +173,23 @@ async function advanceOffer(orderId, { reason = 'START', onlyIfDue = false, expe
   if (deadline - now >= MIN_OFFER_MS) {
     offerExpiresAt = earliest(addSeconds(now, cfg.offerSeconds), deadline);
     const [plng, plat] = order.pickup.coordinates;
-    const candidates = await matchingService.findEligibleDrivers(plng, plat, {
-      excludeIds: order.offeredToDriverIds || [],
-    });
-    for (const candidate of candidates) {
-      if (await claimDriverForOffer(candidate.driver._id, order._id, offerExpiresAt, now)) {
-        next = candidate;
-        break;
+    const rejectedIds = order.rejectedDriverIds || [];
+    // 1-ci tur: heç vaxt təklif almamış sürücülər. 2-ci tur (1-ci turda heç kim tapılmadısa): təklifi qaçırmış
+    // sürücülər yenidən sınanır (soket qopması və s. səbəbindən təklif çatmamış ola bilər); rədd edənlər və
+    // təklifi indicə bitən sürücü istisna olunur.
+    const rounds = [
+      [...(order.offeredToDriverIds || []), ...rejectedIds],
+      [...rejectedIds, ...(order.currentOfferDriverId ? [order.currentOfferDriverId] : [])],
+    ];
+    for (const excludeIds of rounds) {
+      const candidates = await matchingService.findEligibleDrivers(plng, plat, { excludeIds });
+      for (const candidate of candidates) {
+        if (await claimDriverForOffer(candidate.driver._id, order._id, offerExpiresAt, now)) {
+          next = candidate;
+          break;
+        }
       }
+      if (next) break;
     }
   }
 
@@ -196,6 +205,7 @@ async function advanceOffer(orderId, { reason = 'START', onlyIfDue = false, expe
       $addToSet: { offeredToDriverIds: next.driver._id },
       $inc: { dispatchSeq: 1 },
     };
+    if (reason === 'REJECTED' && expectDriverId) update.$addToSet.rejectedDriverIds = expectDriverId;
   } else {
     // Uyğun sürücü yoxdur: təkrar cəhd (yeni sürücü online ola bilər) və ya son vaxtda ləğv.
     update = {
@@ -207,6 +217,7 @@ async function advanceOffer(orderId, { reason = 'START', onlyIfDue = false, expe
       },
       $inc: { dispatchSeq: 1 },
     };
+    if (reason === 'REJECTED' && expectDriverId) update.$addToSet = { rejectedDriverIds: expectDriverId };
   }
 
   // Optimistic lock: başqa proses artıq sifarişi irəli keçiribsə (dispatchSeq dəyişib), heç nə etmirik.

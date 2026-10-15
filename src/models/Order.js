@@ -37,6 +37,9 @@ const orderSchema = new mongoose.Schema(
     // Ardıcıl dispatch: sifariş eyni anda yalnız BİR sürücüyə təklif olunur.
     // offeredToDriverIds - artıq təklif olunmuş (qəbul etməmiş) sürücülərin siyahısı, təkrar təklif olunmur.
     offeredToDriverIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Driver' }],
+    // Təklifi açıq-aşkar RƏDD edən sürücülər: bu sifarişə qaytarılmır. (Təklifi sadəcə qaçıran sürücülər
+    // növbəti turda yenidən sınana bilər - məs. soket qopubsa.)
+    rejectedDriverIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Driver' }],
     currentOfferDriverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver', default: null },
     // Cari təklifin bitmə vaxtı (sürücüyə ayrılan müddətin sonu)
     offerExpiresAt: { type: Date, default: null },

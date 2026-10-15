@@ -39,12 +39,20 @@ async function updateDriverLocation(driver, payload) {
   // Gələcəkdən gələn timestamp sonrakı bütün yeniləmələri "köhnə" saydırmasın.
   if (ts.getTime() > Date.now() + 60_000) ts = new Date();
 
-  if (driver.locationMeta && driver.locationMeta.timestamp && ts < driver.locationMeta.timestamp) {
+  // Köhnə / çox qeyri-dəqiq mövqe koordinatı dəyişmir, amma sürücünün "canlı" olduğunu göstərir:
+  // əks halda sürücü tətbiq açıq olduğu halda 45 san sonra offline edilirdi.
+  const touchAlive = async () => {
+    const t = new Date();
+    await Driver.updateOne({ _id: driver._id }, { $set: { locationUpdatedAt: t } });
+    driver.locationUpdatedAt = t;
     return driver;
+  };
+  if (driver.locationMeta && driver.locationMeta.timestamp && ts < driver.locationMeta.timestamp) {
+    return touchAlive();
   }
   const settings = await getSettings();
   if (accuracy != null && accuracy > (settings.maxLocationAccuracyMeters || 80) * 3) {
-    return driver;
+    return touchAlive();
   }
   const now = new Date();
   // Atomik yeniləmə: tam sənədi save() etmirik ki, paralel dəyişikliklər (currentOrderId, isOnline) üstünə yazılmasın.
