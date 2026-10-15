@@ -54,6 +54,44 @@ async function distanceToCurrentDestination(driver) {
   return haversineMeters(dlat, dlng, olat, olng);
 }
 
+
+// ---- Diaqnostika: sürücü niyə seçilmədi? (Heroku loglarında "[match]" ilə axtarın) ----
+let lastDiagAt = 0;
+async function logWhyNoCandidates(pickupLng, pickupLat, nearbyCount, skipped, excludeIds) {
+  const t = Date.now();
+  if (t - lastDiagAt < 10_000) return; // təkrar cəhd hər 3 san-dir, log spam olmasın
+  lastDiagAt = t;
+  try {
+    const online = await Driver.find({ isOnline: true })
+      .select('isActive isVerified location locationMeta locationUpdatedAt offerLockUntil currentOrderId queuedOrderIds walletBalanceMinor radiusMeters')
+      .limit(20)
+      .lean();
+    const now = Date.now();
+    const rows = online.map((d) => ({
+      id: String(d._id),
+      active: d.isActive,
+      verified: d.isVerified,
+      coords: d.location && d.location.coordinates,
+      locAgeSec: d.locationUpdatedAt ? Math.round((now - new Date(d.locationUpdatedAt)) / 1000) : null,
+      accuracy: d.locationMeta && d.locationMeta.accuracy,
+      lockedUntil: d.offerLockUntil,
+      currentOrderId: d.currentOrderId,
+      queued: (d.queuedOrderIds || []).length,
+      balanceMinor: d.walletBalanceMinor,
+      radiusMeters: d.radiusMeters,
+      alreadyOffered: (excludeIds || []).map(String).includes(String(d._id)),
+    }));
+    console.log('[match] uyğun sürücü yoxdur', JSON.stringify({
+      pickup: [pickupLng, pickupLat],
+      nearSphereFound: nearbyCount,
+      skipped,
+      onlineDrivers: rows,
+    }));
+  } catch (e) {
+    console.error('[match] diaqnostika xətası', e && e.message);
+  }
+}
+
 /**
  * Sifarişə uyğun sürücüləri tapır və SIRALAYIR.
  * Sıralama: əvvəlcə boş sürücülər, sonra sifarişi bitirməyə yaxın olanlar; hər qrupda pickup-a ən yaxın birinci.
@@ -81,19 +119,29 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
   }).limit(50);
 
   const candidates = [];
+  const skipped = [];
   for (const driver of nearby) {
     const gate = driverCanTakeNewOrder(driver, settings, now);
-    if (!gate.ok) continue;
+    if (!gate.ok) {
+      skipped.push({ driverId: String(driver._id), reason: gate.reason });
+      continue;
+    }
 
     const [dlng, dlat] = driver.location.coordinates;
     const dist = haversineMeters(dlat, dlng, pickupLat, pickupLng);
     const radius = Math.min(driver.radiusMeters || settings.defaultDriverRadius, settings.maxDriverRadius);
-    if (dist > radius) continue;
+    if (dist > radius) {
+      skipped.push({ driverId: String(driver._id), reason: 'OUT_OF_RADIUS', distM: Math.round(dist), radiusM: radius });
+      continue;
+    }
 
     let hasActive = Boolean(driver.currentOrderId);
     if (gate.requiresNearDestination) {
       const toDest = await distanceToCurrentDestination(driver);
-      if (toDest == null || toDest > settings.orderQueueActivationDistance) continue;
+      if (toDest == null || toDest > settings.orderQueueActivationDistance) {
+        skipped.push({ driverId: String(driver._id), reason: 'BUSY_NOT_NEAR_DESTINATION', toDestM: toDest == null ? null : Math.round(toDest) });
+        continue;
+      }
       hasActive = true;
     }
 
@@ -118,6 +166,10 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
       score,
       hasActiveOrder: hasActive,
     });
+  }
+
+  if (!candidates.length) {
+    await logWhyNoCandidates(pickupLng, pickupLat, nearby.length, skipped, excludeIds);
   }
 
   candidates.sort((a, b) => {

@@ -104,10 +104,6 @@ function publicDriverId(id) {
   return crypto.createHash('sha1').update(String(id)).digest('hex').slice(0, 12);
 }
 
-/**
- * Müştərinin ətrafındakı BOŞ (aktiv sifarişi olmayan) onlayn sürücülər.
- * Yalnız id, koordinat və istiqamət qaytarılır: ad, nömrə və s. paylaşılmır.
- */
 async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
   const lat = Number(latitude);
   const lng = Number(longitude);

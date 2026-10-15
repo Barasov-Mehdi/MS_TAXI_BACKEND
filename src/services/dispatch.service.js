@@ -374,7 +374,10 @@ async function sweepStaleDrivers() {
     { _id: { $in: ids }, isOnline: true, currentOrderId: null, locationUpdatedAt: { $lt: cutoff } },
     { $set: { isOnline: false, onlineSince: null } }
   );
+  console.log(`[sweep] mövqe köhnəldiyi üçün offline edildi: ${ids.map(String).join(', ')} (limit ${settings.driverLocationStaleSeconds || 45} san)`);
   for (const id of ids) {
+    // Tətbiq "Onlayn" göstərməkdə qalmasın: sürücüyə dərhal xəbər verilir.
+    realtime.toDriver(id, 'driver_offline', { reason: 'STALE_LOCATION' });
     await advanceOffersOfDriver(id, 'DRIVER_OFFLINE').catch((e) => logError('stale advance failed', e));
   }
   return ids.length;
