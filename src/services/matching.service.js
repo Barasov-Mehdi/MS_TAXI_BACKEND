@@ -23,11 +23,25 @@ function calculateScore(d, settings) {
   );
 }
 
-function driverCanTakeNewOrder(driver, settings, now = new Date()) {
+/** Koordinatın GPS ölçmə vaxtı; köhnə sənədlərdə (locationFixAt yoxdur) locationUpdatedAt ilə əvəz olunur. */
+function fixTimeOf(driver) {
+  return driver.locationFixAt || driver.locationUpdatedAt || null;
+}
+
+/**
+ * requireFreshFix: yalnız YENİ sifariş axtarışında true verilir. Heartbeat koordinatı dəyişmədən "canlı" göstərə bilər,
+ * ona görə ölçmə yaşı ayrıca yoxlanılır. Təklifi qəbul edərkən (order.service) verilmir: sürücü artıq seçilib.
+ */
+function driverCanTakeNewOrder(driver, settings, now = new Date(), { requireFreshFix = false } = {}) {
   if (!driver.isOnline || !driver.isActive || !driver.isVerified) return { ok: false, reason: 'NOT_AVAILABLE' };
   const staleSec = settings.driverLocationStaleSeconds || 45;
   if (!driver.locationUpdatedAt || (now - new Date(driver.locationUpdatedAt)) / 1000 > staleSec) {
     return { ok: false, reason: 'STALE_LOCATION' };
+  }
+  if (requireFreshFix) {
+    const fixAt = fixTimeOf(driver);
+    const maxFixSec = settings.driverFixMaxAgeSeconds || 60;
+    if (!fixAt || (now - new Date(fixAt)) / 1000 > maxFixSec) return { ok: false, reason: 'STALE_FIX' };
   }
   const acc = driver.locationMeta && driver.locationMeta.accuracy;
   if (acc != null && acc > (settings.maxLocationAccuracyMeters || 80)) {
@@ -63,7 +77,7 @@ async function logWhyNoCandidates(pickupLng, pickupLat, nearbyCount, skipped, ex
   lastDiagAt = t;
   try {
     const online = await Driver.find({ isOnline: true })
-      .select('isActive isVerified location locationMeta locationUpdatedAt offerLockUntil currentOrderId queuedOrderIds walletBalanceMinor radiusMeters')
+      .select('isActive isVerified location locationMeta locationUpdatedAt locationFixAt offerLockUntil currentOrderId queuedOrderIds walletBalanceMinor radiusMeters')
       .limit(20)
       .lean();
     const now = Date.now();
@@ -73,6 +87,7 @@ async function logWhyNoCandidates(pickupLng, pickupLat, nearbyCount, skipped, ex
       verified: d.isVerified,
       coords: d.location && d.location.coordinates,
       locAgeSec: d.locationUpdatedAt ? Math.round((now - new Date(d.locationUpdatedAt)) / 1000) : null,
+      fixAgeSec: d.locationFixAt ? Math.round((now - new Date(d.locationFixAt)) / 1000) : null,
       accuracy: d.locationMeta && d.locationMeta.accuracy,
       lockedUntil: d.offerLockUntil,
       currentOrderId: d.currentOrderId,
@@ -102,14 +117,19 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
   const settings = await getSettings();
   const maxR = settings.maxDriverRadius || 5000;
   const now = new Date();
+  const fixCutoff = new Date(now.getTime() - (settings.driverFixMaxAgeSeconds || 60) * 1000);
 
   const nearby = await Driver.find({
     isOnline: true,
     isActive: true,
     isVerified: true,
     ...(excludeIds.length ? { _id: { $nin: excludeIds } } : {}),
-    // Başqa sifariş təklifi gözləyən (kilidli) sürücülər atlanır
-    $or: [{ offerLockUntil: null }, { offerLockUntil: { $lte: now } }],
+    $and: [
+      // Başqa sifariş təklifi gözləyən (kilidli) sürücülər atlanır
+      { $or: [{ offerLockUntil: null }, { offerLockUntil: { $lte: now } }] },
+      // Köhnə koordinatlı sürücülər $nearSphere-in limit(50) nəticəsini doldurmasın (kod daxilindəki yoxlama əsasdır)
+      { $or: [{ locationFixAt: { $gte: fixCutoff } }, { locationFixAt: null }] },
+    ],
     location: {
       $nearSphere: {
         $geometry: { type: 'Point', coordinates: [pickupLng, pickupLat] },
@@ -121,7 +141,7 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
   const candidates = [];
   const skipped = [];
   for (const driver of nearby) {
-    const gate = driverCanTakeNewOrder(driver, settings, now);
+    const gate = driverCanTakeNewOrder(driver, settings, now, { requireFreshFix: true });
     if (!gate.ok) {
       skipped.push({ driverId: String(driver._id), reason: gate.reason });
       continue;

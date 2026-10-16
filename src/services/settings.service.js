@@ -7,6 +7,8 @@ const DEFAULTS = {
   maxQueuedOrders: 1,
   driverLocationStaleSeconds: 45,
   maxLocationAccuracyMeters: 80,
+  // Sifariş üçün sürücünün koordinatı (GPS ölçməsi) bu qədər saniyədən köhnə olmamalıdır
+  driverFixMaxAgeSeconds: 60,
 
   tripCommissionType: 'PERCENTAGE',
   tripCommission: 13,

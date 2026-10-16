@@ -26,6 +26,7 @@ function parseCoordinates(payload) {
   return { latitude, longitude };
 }
 
+const MAX_FIX_AGE_MS = 60 * 60 * 1000;
 const finiteOrNull = (v) => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
 
 async function updateDriverLocation(driver, payload) {
@@ -39,6 +40,11 @@ async function updateDriverLocation(driver, payload) {
   // Gələcəkdən gələn timestamp sonrakı bütün yeniləmələri "köhnə" saydırmasın.
   if (ts.getTime() > Date.now() + 60_000) ts = new Date();
 
+  // Koordinatın yaşı: cihaz özü hesablayıb göndərir (fixAgeMs = göndərmə anı - GPS ölçmə anı), beləliklə
+  // telefonun saatı serverdən fərqli olsa belə düzgün qalır. Köhnə tətbiq versiyası göndərmirsə, koordinat təzə sayılır.
+  const fixAgeRaw = finiteOrNull(payload.fixAgeMs);
+  const fixAgeMs = fixAgeRaw == null ? 0 : Math.min(Math.max(fixAgeRaw, 0), MAX_FIX_AGE_MS);
+
   // Köhnə / çox qeyri-dəqiq mövqe koordinatı dəyişmir, amma sürücünün "canlı" olduğunu göstərir:
   // əks halda sürücü tətbiq açıq olduğu halda 45 san sonra offline edilirdi.
   const touchAlive = async () => {
@@ -47,7 +53,8 @@ async function updateDriverLocation(driver, payload) {
     driver.locationUpdatedAt = t;
     return driver;
   };
-  if (driver.locationMeta && driver.locationMeta.timestamp && ts < driver.locationMeta.timestamp) {
+  // Eyni (və ya daha köhnə) GPS ölçməsinin təkrarı (heartbeat) koordinatı və "təzəlik" vaxtını dəyişmir, yalnız canlılığı göstərir.
+  if (driver.locationMeta && driver.locationMeta.timestamp && ts <= driver.locationMeta.timestamp) {
     return touchAlive();
   }
   const settings = await getSettings();
@@ -55,6 +62,7 @@ async function updateDriverLocation(driver, payload) {
     return touchAlive();
   }
   const now = new Date();
+  const fixAt = new Date(now.getTime() - fixAgeMs);
   // Atomik yeniləmə: tam sənədi save() etmirik ki, paralel dəyişikliklər (currentOrderId, isOnline) üstünə yazılmasın.
   await Driver.updateOne(
     { _id: driver._id },
@@ -63,12 +71,14 @@ async function updateDriverLocation(driver, payload) {
         location: point(longitude, latitude),
         locationMeta: { accuracy, heading, speed, timestamp: ts },
         locationUpdatedAt: now,
+        locationFixAt: fixAt,
       },
     }
   );
   driver.location = point(longitude, latitude);
   driver.locationMeta = { accuracy, heading, speed, timestamp: ts };
   driver.locationUpdatedAt = now;
+  driver.locationFixAt = fixAt;
 
   if (driver.currentOrderId) {
     const order = await Order.findById(driver.currentOrderId);
@@ -122,12 +132,15 @@ async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
   const maxR = settings.maxDriverRadius || 5000;
   const radius = Math.min(Math.max(Number(radiusM) || 3000, 200), maxR);
 
+  const cutoff = new Date(Date.now() - NEARBY_MAX_AGE_MS);
   const rows = await Driver.find({
     isOnline: true,
     isActive: true,
     isVerified: true,
     currentOrderId: null,
-    locationUpdatedAt: { $gte: new Date(Date.now() - NEARBY_MAX_AGE_MS) },
+    locationUpdatedAt: { $gte: cutoff },
+    // Köhnə koordinatlı sürücü xəritədə görünməsin (köhnə sənədlərdə locationFixAt yoxdur - onlar üçün locationUpdatedAt)
+    $and: [{ $or: [{ locationFixAt: { $gte: cutoff } }, { locationFixAt: null }] }],
     location: {
       $nearSphere: {
         $geometry: { type: 'Point', coordinates: [lng, lat] },

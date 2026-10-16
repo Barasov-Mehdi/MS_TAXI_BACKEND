@@ -22,7 +22,11 @@ const driverSchema = new mongoose.Schema(
       speed: { type: Number, default: null },
       timestamp: { type: Date, default: null },
     },
+    // Serverin "sürücü canlıdır" vaxtı (hər mesaj/heartbeat yeniləyir) - offline süpürgəsi bunu istifadə edir.
     locationUpdatedAt: { type: Date, default: null },
+    // Koordinatın GPS tərəfindən həqiqətən ölçüldüyü vaxt (server saatı ilə). Sifariş uyğunlaşdırması bunu yoxlayır:
+    // heartbeat köhnə koordinatı "təzə" göstərməsin.
+    locationFixAt: { type: Date, default: null },
     currentOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     queuedOrderIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Order' }],
     walletBalanceMinor: { type: Number, default: 0 },
@@ -36,5 +40,6 @@ const driverSchema = new mongoose.Schema(
 driverSchema.index({ location: '2dsphere' });
 driverSchema.index({ isOnline: 1, isActive: 1, isVerified: 1 });
 driverSchema.index({ isOnline: 1, locationUpdatedAt: 1 });
+driverSchema.index({ isOnline: 1, locationFixAt: 1 });
 
 module.exports = mongoose.model('Driver', driverSchema);
