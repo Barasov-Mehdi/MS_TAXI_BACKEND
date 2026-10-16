@@ -6,10 +6,34 @@ const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
-const { Order, Vehicle, WalletTransaction, OrderIssue } = require('../models');
+const { Order, Vehicle, WalletTransaction, OrderIssue, Customer } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 
 router.use(authenticate, requireRoles('DRIVER'));
+
+/**
+ * Sürücüyə qaytarılan sifarişlərə sərnişinin adı və telefonu əlavə edir.
+ * Order yalnız customerId (Customer sənədi) saxlayır; ad/telefon Customer.userId → User-dədir.
+ * Bu route-lar yalnız sürücünün öz sifarişlərini qaytardığı üçün məlumat yalnız həmin sürücüyə açılır.
+ */
+async function withCustomers(input) {
+  const single = !Array.isArray(input);
+  const list = single ? [input] : input;
+  const docs = list.filter(Boolean);
+  const ids = [...new Set(docs.map((o) => String(o.customerId)))];
+  const customers = ids.length
+    ? await Customer.find({ _id: { $in: ids } }).populate('userId', 'firstName lastName username phone').lean()
+    : [];
+  const byId = new Map(customers.map((c) => [String(c._id), c.userId]));
+  const out = list.map((o) => {
+    if (!o) return o;
+    const obj = typeof o.toObject === 'function' ? o.toObject() : o;
+    const u = byId.get(String(o.customerId));
+    const name = [u?.firstName, u?.lastName].filter(Boolean).join(' ').trim() || u?.username || '';
+    return { ...obj, customerName: name, customerPhone: u?.phone || '' };
+  });
+  return single ? out[0] : out;
+}
 
 router.get('/me', async (req, res) => {
   ok(res, { user: req.user, driver: req.driver });
@@ -85,8 +109,8 @@ router.post('/vehicle', async (req, res, next) => {
 
 router.get('/orders', async (req, res, next) => {
   try {
-    const orders = await Order.find({ driverId: req.driver._id }).sort({ createdAt: -1 }).limit(50);
-    ok(res, { orders });
+    const rows = await Order.find({ driverId: req.driver._id }).sort({ createdAt: -1 }).limit(50);
+    ok(res, { orders: await withCustomers(rows) });
   } catch (e) { next(e); }
 });
 
@@ -111,7 +135,7 @@ router.post('/orders/:id/accept', async (req, res, next) => {
       driver: req.driver,
       user: req.user,
     });
-    ok(res, { order });
+    ok(res, { order: await withCustomers(order) });
   } catch (e) { next(e); }
 });
 
@@ -123,24 +147,25 @@ router.post('/orders/:id/reject', async (req, res, next) => {
 
 router.post('/orders/:id/arrive', async (req, res, next) => {
   try {
-    ok(res, { order: await orderService.arrive({ orderId: req.params.id, driver: req.driver, user: req.user }) });
+    ok(res, { order: await withCustomers(await orderService.arrive({ orderId: req.params.id, driver: req.driver, user: req.user })) });
   } catch (e) { next(e); }
 });
 
 router.post('/orders/:id/start', async (req, res, next) => {
   try {
-    ok(res, { order: await orderService.startTrip({ orderId: req.params.id, driver: req.driver, user: req.user }) });
+    ok(res, { order: await withCustomers(await orderService.startTrip({ orderId: req.params.id, driver: req.driver, user: req.user })) });
   } catch (e) { next(e); }
 });
 
 router.post('/orders/:id/complete', async (req, res, next) => {
   try {
-    ok(res, { order: await orderService.completeTrip({
+    const done = await orderService.completeTrip({
       orderId: req.params.id,
       driver: req.driver,
       user: req.user,
       idempotencyKey: req.get('Idempotency-Key'),
-    }) });
+    });
+    ok(res, { order: await withCustomers(done) });
   } catch (e) { next(e); }
 });
 
