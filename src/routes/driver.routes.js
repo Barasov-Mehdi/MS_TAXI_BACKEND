@@ -114,6 +114,47 @@ router.get('/orders', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Gündəlik statistika: hər gün üçün tamamlanan sifariş sayı və qazanc (son N gün, bugünkü daxil).
+// gross = sərnişindən tutulan məbləğ, commission = balansdan çıxılan komissiya, net = gross - commission.
+const STATS_TZ = process.env.STATS_TIMEZONE || 'Asia/Baku';
+const DONE = [OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, OrderStatus.COMPLETED];
+
+function dayKey(date) {
+  // en-CA → YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', { timeZone: STATS_TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+}
+
+router.get('/stats', async (req, res, next) => {
+  try {
+    const days = Math.min(Math.max(parseInt(req.query.days, 10) || 7, 1), 31);
+    // Aralığın başlanğıcı: (days) gün əvvəl, bir az geniş götürülür, sonra açarlara görə süzülür.
+    const keys = [];
+    for (let i = 0; i < days; i++) keys.push(dayKey(new Date(Date.now() - i * 86400000)));
+    const since = new Date(Date.now() - (days + 1) * 86400000);
+    const dayExpr = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: STATS_TZ } });
+
+    const [orderRows, commRows] = await Promise.all([
+      Order.aggregate([
+        { $match: { driverId: req.driver._id, status: { $in: DONE }, completedAt: { $gte: since } } },
+        { $group: { _id: dayExpr('$completedAt'), trips: { $sum: 1 }, grossMinor: { $sum: { $ifNull: ['$pricingSnapshot.finalPriceMinor', 0] } } } },
+      ]),
+      WalletTransaction.aggregate([
+        { $match: { driverId: req.driver._id, type: 'TRIP_COMMISSION', createdAt: { $gte: since } } },
+        { $group: { _id: dayExpr('$createdAt'), commissionMinor: { $sum: { $abs: '$amountMinor' } } } },
+      ]),
+    ]);
+    const o = new Map(orderRows.map((r) => [r._id, r]));
+    const c = new Map(commRows.map((r) => [r._id, r]));
+    const list = keys.map((date) => {
+      const trips = o.get(date)?.trips || 0;
+      const grossMinor = o.get(date)?.grossMinor || 0;
+      const commissionMinor = c.get(date)?.commissionMinor || 0;
+      return { date, trips, grossMinor, commissionMinor, netMinor: grossMinor - commissionMinor };
+    });
+    ok(res, { timezone: STATS_TZ, today: list[0], days: list });
+  } catch (e) { next(e); }
+});
+
 // Tətbiq yenidən açılanda / bağlantı bərpa olunanda: gözləyən (vaxtı bitməmiş) təklif varsa qaytarılır.
 router.get('/offers/current', async (req, res, next) => {
   try {
