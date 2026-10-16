@@ -1,13 +1,15 @@
 const router = require('express').Router();
 const mongoose = require('mongoose');
+const Joi = require('joi');
 const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
-const { Order, Vehicle, WalletTransaction, OrderIssue, Customer } = require('../models');
+const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
+const { publicUser } = require('../services/auth.service');
 
 router.use(authenticate, requireRoles('DRIVER'));
 
@@ -35,19 +37,66 @@ async function withCustomers(input) {
   return single ? out[0] : out;
 }
 
-router.get('/me', async (req, res) => {
-  ok(res, { user: req.user, driver: req.driver });
-});
+function validated(schema) {
+  return (req, res, next) => {
+    const { error, value } = schema.validate(req.body, { stripUnknown: true });
+    if (error) return next(new AppError('VALIDATION_ERROR', error.details[0].message, 400));
+    req.body = value;
+    next();
+  };
+}
 
-router.patch('/me', async (req, res, next) => {
+async function loadVehicle(driver) {
+  return driver.vehicleId ? Vehicle.findById(driver.vehicleId).lean() : null;
+}
+
+// Tətbiqin ehtiyac duyduğu limitlər (radius yuxarı həddi və s.)
+async function limits() {
+  const st = await getSettings();
+  return { maxDriverRadius: st.maxDriverRadius, defaultDriverRadius: st.defaultDriverRadius };
+}
+
+// DİQQƏT: User sənədi birbaşa qaytarılmır (passwordHash, OTP/reset kodları sızmasın).
+router.get('/me', async (req, res, next) => {
   try {
-    const { firstName, lastName } = req.body;
-    if (firstName != null) req.user.firstName = firstName;
-    if (lastName != null) req.user.lastName = lastName;
-    await req.user.save();
-    ok(res, { user: req.user });
+    ok(res, {
+      user: publicUser(req.user),
+      driver: req.driver,
+      vehicle: await loadVehicle(req.driver),
+      limits: await limits(),
+    });
   } catch (e) { next(e); }
 });
+
+const nameField = Joi.string().trim().min(1).max(50).messages({
+  'string.empty': 'Ad boş ola bilməz',
+  'string.max': 'Ən çox 50 simvol',
+});
+
+router.patch(
+  '/me',
+  validated(Joi.object({
+    firstName: nameField,
+    lastName: nameField,
+    email: Joi.string().trim().lowercase().email().allow('', null).messages({ 'string.email': 'E-poçt düzgün deyil' }),
+  })),
+  async (req, res, next) => {
+    try {
+      const { firstName, lastName, email } = req.body;
+      if (firstName !== undefined) req.user.firstName = firstName;
+      if (lastName !== undefined) req.user.lastName = lastName;
+      if (email !== undefined) {
+        const next_ = email || null;
+        if (next_ && (await User.exists({ email: next_, _id: { $ne: req.user._id } }))) {
+          throw new AppError('EMAIL_TAKEN', 'Bu e-poçt artıq istifadə olunur', 409);
+        }
+        req.user.email = next_;
+      }
+      await req.user.save();
+      ok(res, { user: publicUser(req.user) });
+    } catch (e) { next(e); }
+  }
+);
 
 router.post('/online', async (req, res, next) => {
   try {
@@ -88,9 +137,9 @@ router.post('/location', async (req, res, next) => {
 router.patch('/radius', async (req, res, next) => {
   try {
     const settings = await getSettings();
-    const r = Number(req.body.radiusMeters);
-    if (!r || r <= 0 || r > settings.maxDriverRadius) {
-      throw new AppError('INVALID_RADIUS', 'Radius exceeds max allowed', 400);
+    const r = Math.round(Number(req.body.radiusMeters));
+    if (!r || r < 500 || r > settings.maxDriverRadius) {
+      throw new AppError('INVALID_RADIUS', `Radius 500 m ilə ${settings.maxDriverRadius} m arasında olmalıdır`, 400);
     }
     req.driver.radiusMeters = r;
     await req.driver.save();
@@ -98,14 +147,56 @@ router.patch('/radius', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/vehicle', async (req, res, next) => {
+const vehicleSchema = Joi.object({
+  make: Joi.string().trim().min(1).max(40).required().messages({ 'any.required': 'Markanı yazın', 'string.empty': 'Markanı yazın' }),
+  model: Joi.string().trim().min(1).max(40).required().messages({ 'any.required': 'Modeli yazın', 'string.empty': 'Modeli yazın' }),
+  color: Joi.string().trim().min(1).max(30).required().messages({ 'any.required': 'Rəngi yazın', 'string.empty': 'Rəngi yazın' }),
+  plateNumber: Joi.string().trim().min(4).max(12).required().messages({
+    'any.required': 'Nömrə nişanını yazın',
+    'string.empty': 'Nömrə nişanını yazın',
+    'string.min': 'Nömrə nişanı düzgün deyil',
+  }),
+  year: Joi.number().integer().min(1980).max(new Date().getFullYear() + 1).allow(null).messages({
+    'number.min': 'İl düzgün deyil',
+    'number.max': 'İl düzgün deyil',
+    'number.base': 'İl düzgün deyil',
+  }),
+  seats: Joi.number().integer().min(1).max(8),
+});
+
+router.get('/vehicle', async (req, res, next) => {
   try {
-    const v = await Vehicle.create({ ...req.body, driverId: req.driver._id });
-    req.driver.vehicleId = v._id;
-    await req.driver.save();
-    ok(res, { vehicle: v }, {}, 201);
+    ok(res, { vehicle: await loadVehicle(req.driver) });
   } catch (e) { next(e); }
 });
+
+// Avtomobil yoxdursa yaradır, varsa YENİLƏYİR (təkrar sənəd yaranmır). Yalnız icazə verilən sahələr qəbul olunur.
+async function saveVehicle(req, res, next) {
+  try {
+    if (req.driver.currentOrderId) {
+      throw new AppError('ACTIVE_TRIP', 'Aktiv sifariş zamanı avtomobili dəyişmək olmaz', 409);
+    }
+    const data = { ...req.body, plateNumber: req.body.plateNumber.replace(/[\s]+/g, '').toUpperCase() };
+    let vehicle = req.driver.vehicleId ? await Vehicle.findById(req.driver.vehicleId) : null;
+    const created = !vehicle;
+    try {
+      if (vehicle) {
+        vehicle.set(data);
+        await vehicle.save();
+      } else {
+        vehicle = await Vehicle.create({ ...data, driverId: req.driver._id });
+        req.driver.vehicleId = vehicle._id;
+        await req.driver.save();
+      }
+    } catch (e) {
+      if (e && e.code === 11000) throw new AppError('PLATE_TAKEN', 'Bu nömrə nişanı artıq qeydiyyatdadır', 409);
+      throw e;
+    }
+    ok(res, { vehicle }, {}, created ? 201 : 200);
+  } catch (e) { next(e); }
+}
+router.put('/vehicle', validated(vehicleSchema), saveVehicle);
+router.post('/vehicle', validated(vehicleSchema), saveVehicle); // köhnə tətbiqlərlə uyğunluq
 
 router.get('/orders', async (req, res, next) => {
   try {

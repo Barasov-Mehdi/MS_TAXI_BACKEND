@@ -113,6 +113,29 @@ router.post('/verify-phone', authenticate, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+router.post(
+  '/change-password',
+  authenticate,
+  validate(Joi.object({
+    currentPassword: Joi.string().required().messages({ 'string.empty': 'Cari parolu yazın' }),
+    newPassword: Joi.string().min(6).max(72).required().messages({
+      'string.min': 'Yeni parol ən azı 6 simvol olmalıdır',
+      'string.empty': 'Yeni parolu yazın',
+    }),
+    refreshToken: Joi.string().allow('', null),
+  })),
+  async (req, res, next) => {
+    try {
+      ok(res, await authService.changePassword({
+        userId: req.user._id,
+        currentPassword: req.body.currentPassword,
+        newPassword: req.body.newPassword,
+        keepRefreshToken: req.body.refreshToken || null,
+      }));
+    } catch (e) { next(e); }
+  }
+);
+
 router.post('/forgot-password', async (req, res, next) => {
   try {
     const user = await User.findOne({ phone: req.body.phone });

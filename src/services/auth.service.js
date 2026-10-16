@@ -143,6 +143,30 @@ async function verifyPhone(userId, code) {
   return user;
 }
 
+/**
+ * Parolu dəyişir. Cari parol yoxlanılır; bu cihazın refresh token-i istisna olmaqla
+ * bütün digər sessiyalar bağlanır.
+ */
+async function changePassword({ userId, currentPassword, newPassword, keepRefreshToken }) {
+  const user = await User.findById(userId);
+  if (!user) throw new AppError('USER_NOT_FOUND', 'User not found', 404);
+  if (!(await user.comparePassword(currentPassword))) {
+    throw new AppError('INVALID_PASSWORD', 'Cari parol yanlışdır', 400);
+  }
+  if (currentPassword === newPassword) {
+    throw new AppError('SAME_PASSWORD', 'Yeni parol cari paroldan fərqli olmalıdır', 400);
+  }
+  user.passwordHash = await User.hashPassword(newPassword);
+  user.passwordResetCode = null;
+  user.passwordResetExpiresAt = null;
+  await user.save();
+  const filter = { userId: user._id, revoked: false };
+  if (keepRefreshToken) filter.tokenHash = { $ne: hashToken(keepRefreshToken) };
+  await RefreshToken.updateMany(filter, { revoked: true });
+  await AuditLog.create({ actorId: user._id, actorRole: user.role, action: 'PASSWORD_CHANGED' });
+  return { changed: true };
+}
+
 function publicUser(user) {
   return {
     id: user._id,
@@ -156,4 +180,4 @@ function publicUser(user) {
   };
 }
 
-module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, publicUser, signAccess };
+module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, changePassword, publicUser, signAccess };
