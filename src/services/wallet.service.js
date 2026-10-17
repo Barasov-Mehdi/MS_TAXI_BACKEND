@@ -3,36 +3,50 @@ const { getSettings } = require('./settings.service');
 const { AppError } = require('../utils/errors');
 const { percentOf } = require('../utils/money');
 
+/**
+ * Bakiye dəyişikliyi ATOMİKDİR: tək `findOneAndUpdate` ($inc) ilə edilir, yəni eyni anda gələn
+ * iki əməliyyat bir-birinin üzərinə yazmır. Mənfi bakiyə qadağandırsa, şərt eyni sorğunun içindədir.
+ * idempotencyKey təkrar çağırışda eyni əməliyyatı qaytarır (və bakiyəni ikinci dəfə dəyişmir).
+ */
 async function applyTransaction({
   driverId, type, amountMinor, referenceType, referenceId,
   idempotencyKey, note, createdBy, session,
 }) {
-  const existing = await WalletTransaction.findOne({ idempotencyKey }).session(session || null);
+  const sess = session || null;
+  const existing = await WalletTransaction.findOne({ idempotencyKey }).session(sess);
   if (existing) return existing;
 
-  const driver = await Driver.findById(driverId).session(session || null);
-  if (!driver) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
-
   const settings = await getSettings();
-  const before = driver.walletBalanceMinor || 0;
-  const after = before + amountMinor;
-
-  if (after < 0 && !settings.negativeBalanceAllowed) {
-    throw new AppError('INSUFFICIENT_BALANCE', 'Driver wallet balance insufficient', 400);
+  const filter = { _id: driverId };
+  if (amountMinor < 0 && !settings.negativeBalanceAllowed) {
+    filter.$expr = { $gte: [{ $ifNull: ['$walletBalanceMinor', 0] }, -amountMinor] };
   }
 
-  driver.walletBalanceMinor = after;
-  await driver.save({ session });
+  // new:false → dəyişiklikdən ƏVVƏLKİ sənəd qayıdır (balanceBefore üçün)
+  const prev = await Driver.findOneAndUpdate(
+    filter,
+    { $inc: { walletBalanceMinor: amountMinor } },
+    { new: false, session: sess }
+  );
+  if (!prev) {
+    const exists = await Driver.exists({ _id: driverId }).session(sess);
+    if (!exists) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
+    throw new AppError('INSUFFICIENT_BALANCE', 'Driver wallet balance insufficient', 400);
+  }
+  const before = prev.walletBalanceMinor || 0;
+  const after = before + amountMinor;
 
   try {
     const [tx] = await WalletTransaction.create(
       [{ driverId, type, amountMinor, balanceBeforeMinor: before, balanceAfterMinor: after,
          referenceType, referenceId, idempotencyKey, note, createdBy }],
-      { session }
+      { session: sess }
     );
     return tx;
   } catch (e) {
-    if (e.code === 11000) return WalletTransaction.findOne({ idempotencyKey }).session(session || null);
+    // Paralel təkrar sorğu eyni açarı artıq yazıb: bizim $inc-i geri qaytarırıq.
+    await Driver.updateOne({ _id: driverId }, { $inc: { walletBalanceMinor: -amountMinor } }, { session: sess });
+    if (e.code === 11000) return WalletTransaction.findOne({ idempotencyKey }).session(sess);
     throw e;
   }
 }

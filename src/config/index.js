@@ -60,6 +60,9 @@ function validateConfig(cfg = config) {
   if (problems.length) {
     throw new Error(`Yanlış production konfiqurasiyası:\n - ${problems.join('\n - ')}`);
   }
+  if (!process.env.OTP_SECRET) {
+    console.warn('[config] OTP_SECRET təyin edilməyib: JWT_ACCESS_SECRET istifadə olunur (ayrıca açar tövsiyə olunur)');
+  }
   if (cfg.corsOrigin === '*') {
     console.warn('[config] CORS_ORIGIN təyin edilməyib: bütün origin-lərə icazə verilir');
   }

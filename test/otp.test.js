@@ -101,3 +101,18 @@ test('SMS failure releases the cooldown so user can retry immediately', async ()
 test('verify without request fails', async () => {
   await expect(otp.verifyOtp(PHONE, '123456')).rejects.toMatchObject({ code: 'INVALID_CODE' });
 });
+
+test('purpose isolates codes: a login code cannot reset a password and vice versa', async () => {
+  await otp.requestOtp(PHONE, 'reset');
+  const resetCode = lastCode();
+  await expect(otp.verifyOtp(PHONE, resetCode)).rejects.toMatchObject({ code: 'INVALID_CODE' }); // login
+  await expect(otp.verifyOtp(PHONE, resetCode, 'verify')).rejects.toMatchObject({ code: 'INVALID_CODE' });
+  await expect(otp.verifyOtp(PHONE, resetCode, 'reset')).resolves.toBeUndefined();
+  await expect(otp.verifyOtp(PHONE, resetCode, 'reset')).rejects.toMatchObject({ code: 'INVALID_CODE' }); // təkistifadəlik
+});
+
+test('different purposes keep independent cooldowns', async () => {
+  await otp.requestOtp(PHONE, 'login');
+  await expect(otp.requestOtp(PHONE, 'reset')).resolves.toBeDefined();
+  await expect(otp.requestOtp(PHONE, 'reset')).rejects.toMatchObject({ code: 'OTP_COOLDOWN' });
+});

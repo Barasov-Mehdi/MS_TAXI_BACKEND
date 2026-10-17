@@ -30,6 +30,13 @@ const limiterOpts = (max) => ({
 });
 const otpRequestLimiter = rateLimit(limiterOpts(10));
 const otpVerifyLimiter = rateLimit(limiterOpts(30));
+// Parol endpoint-ləri: IP üzrə + nömrə üzrə ayrıca limit (brute-force / SMS spam).
+const phoneKey = (req) => `ph:${String((req.body && req.body.phone) || '').replace(/\D/g, '').slice(-9)}`;
+const loginIpLimiter = rateLimit({ ...limiterOpts(60), skipSuccessfulRequests: true });
+const loginPhoneLimiter = rateLimit({ ...limiterOpts(10), skipSuccessfulRequests: true, keyGenerator: phoneKey });
+const registerLimiter = rateLimit({ ...limiterOpts(10), windowMs: 60 * 60 * 1000 });
+const resetIpLimiter = rateLimit(limiterOpts(20));
+const resetPhoneLimiter = rateLimit({ ...limiterOpts(10), keyGenerator: phoneKey });
 
 const phoneField = Joi.string().required().custom((v, helpers) => {
   const n = normalizePhone(v);
@@ -67,6 +74,7 @@ router.post(
 // ---- Parol ilə giriş: yalnız admin / sürücü üçün ----
 router.post(
   '/register',
+  registerLimiter,
   validate(Joi.object({
     role: Joi.string().valid('CUSTOMER', 'DRIVER').required(),
     phone: Joi.string().required(),
@@ -78,13 +86,15 @@ router.post(
   async (req, res, next) => {
     try {
       const user = await authService.register(req.body);
-      ok(res, { user: authService.publicUser(user), verifyHint: user.phoneVerifyCode }, {}, 201);
+      ok(res, { user: authService.publicUser(user) }, {}, 201);
     } catch (e) { next(e); }
   }
 );
 
 router.post(
   '/login',
+  loginIpLimiter,
+  loginPhoneLimiter,
   validate(Joi.object({ phone: Joi.string().required(), password: Joi.string().required() })),
   async (req, res, next) => {
     try {
@@ -106,10 +116,16 @@ router.post('/logout', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/verify-phone', authenticate, async (req, res, next) => {
+router.post('/verify-phone', authenticate, otpVerifyLimiter, async (req, res, next) => {
   try {
     const user = await authService.verifyPhone(req.user._id, req.body.code);
     ok(res, { user: authService.publicUser(user) });
+  } catch (e) { next(e); }
+});
+
+router.post('/verify-phone/resend', authenticate, otpRequestLimiter, async (req, res, next) => {
+  try {
+    ok(res, await authService.resendVerification(req.user._id));
   } catch (e) { next(e); }
 });
 
@@ -136,29 +152,36 @@ router.post(
   }
 );
 
-router.post('/forgot-password', async (req, res, next) => {
-  try {
-    const user = await User.findOne({ phone: req.body.phone });
-    if (user) {
-      user.passwordResetCode = String(Math.floor(100000 + Math.random() * 900000));
-      user.passwordResetExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
-      await user.save();
-    }
-    ok(res, { sent: true });
-  } catch (e) { next(e); }
-});
+router.post(
+  '/forgot-password',
+  resetIpLimiter,
+  resetPhoneLimiter,
+  validate(Joi.object({ phone: Joi.string().trim().required() })),
+  async (req, res, next) => {
+    try {
+      ok(res, await authService.requestPasswordReset(req.body.phone));
+    } catch (e) { next(e); }
+  }
+);
 
-router.post('/reset-password', async (req, res, next) => {
-  try {
-    const user = await User.findOne({ phone: req.body.phone, passwordResetCode: req.body.code });
-    if (!user || user.passwordResetExpiresAt < new Date()) {
-      throw new AppError('INVALID_CODE', 'Invalid reset code', 400);
-    }
-    user.passwordHash = await User.hashPassword(req.body.password);
-    user.passwordResetCode = null;
-    await user.save();
-    ok(res, { reset: true });
-  } catch (e) { next(e); }
-});
+router.post(
+  '/reset-password',
+  resetIpLimiter,
+  resetPhoneLimiter,
+  validate(Joi.object({
+    phone: Joi.string().trim().required(),
+    code: Joi.string().pattern(/^\d{6}$/).required().messages({
+      'string.pattern.base': 'Kod 6 rəqəmdən ibarət olmalıdır',
+    }),
+    password: Joi.string().min(6).max(72).required().messages({
+      'string.min': 'Yeni parol ən azı 6 simvol olmalıdır',
+    }),
+  })),
+  async (req, res, next) => {
+    try {
+      ok(res, await authService.resetPassword({ ...req.body, ip: req.ip }));
+    } catch (e) { next(e); }
+  }
+);
 
 module.exports = router;

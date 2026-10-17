@@ -5,6 +5,7 @@ const config = require('../config');
 const { AppError } = require('../utils/errors');
 const { AuditLog } = require('../models');
 const otpService = require('./otp.service');
+const { normalizePhone } = require('../utils/validators');
 
 function signAccess(user) {
   return jwt.sign({ sub: String(user._id), role: user.role }, config.jwt.accessSecret, {
@@ -31,26 +32,37 @@ async function register({ role, phone, password, firstName, lastName, email }) {
   if (!['CUSTOMER', 'DRIVER'].includes(role)) {
     throw new AppError('INVALID_ROLE', 'Role must be CUSTOMER or DRIVER', 400);
   }
+  const normalized = normalizePhone(phone);
+  if (!normalized) throw new AppError('VALIDATION_ERROR', 'Telefon nömrəsi düzgün deyil', 400);
+  phone = normalized;
   const exists = await User.findOne({ phone });
   if (exists) throw new AppError('PHONE_TAKEN', 'Phone already registered', 409);
   const passwordHash = await User.hashPassword(password);
-  const user = await User.create({
-    role,
-    phone,
-    passwordHash,
-    firstName,
-    lastName,
-    email,
-    phoneVerifyCode: String(Math.floor(100000 + Math.random() * 900000)),
-    phoneVerifyExpiresAt: new Date(Date.now() + 10 * 60 * 1000),
-  });
+  const user = await User.create({ role, phone, passwordHash, firstName, lastName, email });
   if (role === 'CUSTOMER') await Customer.create({ userId: user._id });
   if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false });
+  // Təsdiq kodu SMS ilə göndərilir (cavabda qaytarılmır). SMS xətası qeydiyyatı pozmur; /auth/verify-phone/resend var.
+  try {
+    await otpService.requestOtp(phone, 'verify');
+  } catch (e) {
+    console.error('[auth] təsdiq SMS-i göndərilmədi:', e && e.code ? e.code : e.message);
+  }
   return user;
 }
 
+/** Giriş üçün nömrəni normallaşdırır; köhnə (normallaşdırılmamış) qeydləri də tapır. */
+async function findUserByPhone(input) {
+  const raw = String(input || '').trim();
+  const normalized = normalizePhone(raw);
+  if (normalized) {
+    const u = await User.findOne({ phone: normalized });
+    if (u) return u;
+  }
+  return raw ? User.findOne({ phone: raw }) : null;
+}
+
 async function login({ phone, password, ip }) {
-  const user = await User.findOne({ phone });
+  const user = await findUserByPhone(phone);
   if (!user || !(await user.comparePassword(password))) {
     throw new AppError('INVALID_CREDENTIALS', 'Invalid phone or password', 401);
   }
@@ -134,13 +146,50 @@ async function verifyPhone(userId, code) {
   const user = await User.findById(userId);
   if (!user) throw new AppError('USER_NOT_FOUND', 'User not found', 404);
   if (user.phoneVerified) return user;
-  if (!user.phoneVerifyCode || user.phoneVerifyCode !== code || user.phoneVerifyExpiresAt < new Date()) {
-    throw new AppError('INVALID_CODE', 'Invalid or expired verification code', 400);
-  }
+  await otpService.verifyOtp(user.phone, String(code || ''), 'verify');
   user.phoneVerified = true;
-  user.phoneVerifyCode = null;
   await user.save();
   return user;
+}
+
+async function resendVerification(userId) {
+  const user = await User.findById(userId);
+  if (!user) throw new AppError('USER_NOT_FOUND', 'User not found', 404);
+  if (user.phoneVerified) return { sent: false, alreadyVerified: true };
+  const result = await otpService.requestOtp(user.phone, 'verify');
+  return { sent: true, ...result };
+}
+
+/**
+ * Şifrə sıfırlama: kod SMS ilə gedir. Nömrənin mövcud olub-olmaması cavabdan bilinmir
+ * (həmişə { sent: true }). Parol yalnız sürücü/admin hesablarında var.
+ */
+async function requestPasswordReset(phoneInput) {
+  const user = await findUserByPhone(phoneInput);
+  if (!user || !user.isActive || !user.passwordHash || user.role === 'CUSTOMER') return { sent: true };
+  try {
+    const result = await otpService.requestOtp(user.phone, 'reset');
+    return { sent: true, ...result }; // devCode yalnız SMS açarı olmayan inkişaf mühitində gəlir
+  } catch (e) {
+    if (e && ['OTP_COOLDOWN', 'OTP_LIMIT'].includes(e.code)) return { sent: true };
+    console.error('[auth] sıfırlama SMS-i göndərilmədi:', e && e.code ? e.code : e.message);
+    return { sent: true };
+  }
+}
+
+async function resetPassword({ phone: phoneInput, code, password, ip }) {
+  const invalid = () => new AppError('INVALID_CODE', 'Kod səhvdir və ya vaxtı bitib', 400);
+  const user = await findUserByPhone(phoneInput);
+  if (!user || !user.isActive || !user.passwordHash || user.role === 'CUSTOMER') throw invalid();
+  await otpService.verifyOtp(user.phone, String(code), 'reset');
+  user.passwordHash = await User.hashPassword(password);
+  user.passwordResetCode = null;
+  user.passwordResetExpiresAt = null;
+  await user.save();
+  // Bütün köhnə sessiyalar bağlanır (parol oğurlanmış ola bilər).
+  await RefreshToken.updateMany({ userId: user._id, revoked: false }, { revoked: true });
+  await AuditLog.create({ actorId: user._id, actorRole: user.role, action: 'PASSWORD_RESET', ip });
+  return { reset: true };
 }
 
 /**
@@ -180,4 +229,4 @@ function publicUser(user) {
   };
 }
 
-module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, changePassword, publicUser, signAccess };
+module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, resendVerification, requestPasswordReset, resetPassword, changePassword, publicUser, signAccess };

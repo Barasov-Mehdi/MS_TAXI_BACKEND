@@ -6,8 +6,9 @@ const { AppError } = require('../utils/errors');
  * 1sms.az OTP API: POST /api/v1/sms/otp
  * Header: X-API-Key, X-Idempotency-Key. Body: { to, text, senderName }
  */
-async function sendOtpSms(phone, code) {
-  const text = `MS Taxi: təsdiq kodunuz ${code}. Kodu heç kimlə paylaşmayın.`;
+async function sendOtpSms(phone, code, purpose = 'login') {
+  const label = purpose === 'reset' ? 'parol sıfırlama kodunuz' : 'təsdiq kodunuz';
+  const text = `MS Taxi: ${label} ${code}. Kodu heç kimlə paylaşmayın.`;
 
   if (!config.sms.apiKey) {
     if (config.env === 'production') {

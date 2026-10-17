@@ -1,8 +1,10 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const config = require('../config');
 const { User, PricingRule, PromoCode } = require('../models');
 const { seedDefaults } = require('../services/settings.service');
+const { normalizePhone } = require('../utils/validators');
 
 async function run() {
   await mongoose.connect(config.mongoUri);
@@ -58,19 +60,35 @@ async function run() {
     });
   }
 
-  if (!(await User.findOne({ phone: '+994500000000' }))) {
-    const passwordHash = await User.hashPassword('Admin123!');
+  // Admin: nömrə və parol mühit dəyişənlərindən gəlir. Sabit/default parol YOXDUR.
+  const adminPhone = normalizePhone(process.env.ADMIN_PHONE || '+994500000000');
+  if (!adminPhone) throw new Error('ADMIN_PHONE düzgün Azərbaycan mobil nömrəsi deyil');
+  let adminNote = 'admin artıq mövcuddur, dəyişdirilmədi';
+  if (!(await User.findOne({ phone: adminPhone }))) {
+    let password = process.env.ADMIN_PASSWORD;
+    let generated = false;
+    if (!password) {
+      if (config.env === 'production') {
+        throw new Error('Production-da ADMIN_PASSWORD təyin edilməlidir (ən azı 12 simvol)');
+      }
+      password = crypto.randomBytes(12).toString('base64url');
+      generated = true;
+    }
+    if (password.length < 12) throw new Error('ADMIN_PASSWORD ən azı 12 simvol olmalıdır');
     await User.create({
       role: 'ADMIN',
-      phone: '+994500000000',
-      passwordHash,
+      phone: adminPhone,
+      passwordHash: await User.hashPassword(password),
       firstName: 'Admin',
       lastName: 'Root',
       phoneVerified: true,
     });
+    adminNote = generated
+      ? `admin yaradıldı: ${adminPhone} / ${password}  (parol yalnız indi göstərilir, saxlayın)`
+      : `admin yaradıldı: ${adminPhone} (parol ADMIN_PASSWORD-dan)`;
   }
 
-  console.log('seed complete. admin phone +994500000000 / Admin123!');
+  console.log(`seed complete. ${adminNote}`);
   await mongoose.disconnect();
 }
 

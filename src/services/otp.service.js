@@ -10,8 +10,13 @@ function generateCode() {
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
 }
 
-function hashCode(phone, code) {
-  return crypto.createHmac('sha256', config.otp.secret).update(`${phone}:${code}`).digest('hex');
+// Məqsəd (purpose) ayrı açar yaradır: giriş kodu şifrə sıfırlamada işləməsin (və əksinə).
+function keyFor(phone, purpose) {
+  return !purpose || purpose === 'login' ? phone : `${purpose}:${phone}`;
+}
+
+function hashCode(phone, code, purpose) {
+  return crypto.createHmac('sha256', config.otp.secret).update(`${keyFor(phone, purpose)}:${code}`).digest('hex');
 }
 
 function safeEqualHex(a, b) {
@@ -29,25 +34,29 @@ function cooldownError(seconds) {
   );
 }
 
-/** Kod yaradır, saxlayır və SMS ilə göndərir. */
-async function requestOtp(phone) {
+/**
+ * Kod yaradır, saxlayır və SMS ilə göndərir.
+ * purpose: 'login' (default) | 'reset' (şifrə sıfırlama) | 'verify' (nömrə təsdiqi)
+ */
+async function requestOtp(phone, purpose = 'login') {
+  const key = keyFor(phone, purpose);
   const now = new Date();
   const cooldownMs = config.otp.resendCooldownSec * 1000;
   const code = generateCode();
   const fields = {
-    codeHash: hashCode(phone, code),
+    codeHash: hashCode(phone, code, purpose),
     expiresAt: new Date(now.getTime() + config.otp.ttlSec * 1000),
     attempts: 0,
     lastSentAt: now,
   };
 
-  const existing = await OtpCode.findOne({ phone });
+  const existing = await OtpCode.findOne({ phone: key });
   let docId;
 
   if (!existing) {
     try {
       const doc = await OtpCode.create({
-        phone,
+        phone: key,
         ...fields,
         sendCount: 1,
         windowStartedAt: now,
@@ -95,7 +104,7 @@ async function requestOtp(phone) {
   }
 
   try {
-    const result = await sendOtpSms(phone, code);
+    const result = await sendOtpSms(phone, code, purpose);
     // devCode yalnız SMS açarı olmayan inkişaf mühitində qaytarılır.
     return result.dev ? { devCode: code } : {};
   } catch (e) {
@@ -109,9 +118,10 @@ async function requestOtp(phone) {
 }
 
 /** Kodu yoxlayır. Uğurlu olarsa kod istifadə olunmuş sayılır (təkistifadəlik). */
-async function verifyOtp(phone, code) {
+async function verifyOtp(phone, code, purpose = 'login') {
+  const key = keyFor(phone, purpose);
   const invalid = () => new AppError('INVALID_CODE', 'Kod səhvdir və ya vaxtı bitib', 400);
-  const doc = await OtpCode.findOne({ phone });
+  const doc = await OtpCode.findOne({ phone: key });
   if (!doc || !doc.codeHash || doc.expiresAt < new Date()) throw invalid();
 
   // Cəhd sayğacı atomik artırılır: paralel sorğularla brute-force mümkün deyil.
@@ -124,7 +134,7 @@ async function verifyOtp(phone, code) {
     throw new AppError('OTP_LOCKED', 'Çox sayda səhv cəhd. Yeni kod istəyin', 429);
   }
 
-  if (!safeEqualHex(hashCode(phone, String(code)), doc.codeHash)) throw invalid();
+  if (!safeEqualHex(hashCode(phone, String(code), purpose), doc.codeHash)) throw invalid();
 
   const consumed = await OtpCode.findOneAndUpdate(
     { _id: doc._id, codeHash: doc.codeHash },
