@@ -41,12 +41,7 @@ async function register({ role, phone, password, firstName, lastName, email }) {
   const user = await User.create({ role, phone, passwordHash, firstName, lastName, email });
   if (role === 'CUSTOMER') await Customer.create({ userId: user._id });
   if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false });
-  // Təsdiq kodu SMS ilə göndərilir (cavabda qaytarılmır). SMS xətası qeydiyyatı pozmur; /auth/verify-phone/resend var.
-  try {
-    await otpService.requestOtp(phone, 'verify');
-  } catch (e) {
-    console.error('[auth] təsdiq SMS-i göndərilmədi:', e && e.code ? e.code : e.message);
-  }
+  // Nömrə təsdiqi (OTP) tələb olunmur: hesabı administrator təsdiqləyir. İstəsəniz /auth/verify-phone/resend ilə kod göndərilə bilər.
   return user;
 }
 
@@ -166,7 +161,13 @@ async function resendVerification(userId) {
  */
 async function requestPasswordReset(phoneInput) {
   const user = await findUserByPhone(phoneInput);
-  if (!user || !user.isActive || !user.passwordHash || user.role === 'CUSTOMER') return { sent: true };
+  if (!user || !user.isActive || !user.passwordHash || user.role === 'CUSTOMER') {
+    // Cavab eyni qalır (nömrə yoxlanışının qarşısı), amma səbəb serverin logunda görünür.
+    const reason = !user ? 'nömrə tapılmadı' : !user.isActive ? 'hesab deaktivdir'
+      : user.role === 'CUSTOMER' ? 'sərnişin hesabıdır (parolu yoxdur)' : 'parolu yoxdur';
+    console.warn(`[auth] şifrə sıfırlama SMS-i göndərilmədi: ${reason} (...${String(phoneInput).slice(-4)})`);
+    return { sent: true };
+  }
   try {
     const result = await otpService.requestOtp(user.phone, 'reset');
     return { sent: true, ...result }; // devCode yalnız SMS açarı olmayan inkişaf mühitində gəlir
