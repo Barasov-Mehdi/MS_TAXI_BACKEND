@@ -28,7 +28,7 @@ async function issueRefresh(user) {
   return raw;
 }
 
-async function register({ role, phone, password, firstName, lastName, email }) {
+async function register({ role, phone, password, firstName, lastName, email, code }) {
   if (!['CUSTOMER', 'DRIVER'].includes(role)) {
     throw new AppError('INVALID_ROLE', 'Role must be CUSTOMER or DRIVER', 400);
   }
@@ -37,12 +37,28 @@ async function register({ role, phone, password, firstName, lastName, email }) {
   phone = normalized;
   const exists = await User.findOne({ phone });
   if (exists) throw new AppError('PHONE_TAKEN', 'Phone already registered', 409);
+  // Nömrə SMS kodu ilə təsdiqlənməlidir (kod /auth/register/otp ilə göndərilir; təkistifadəlikdir).
+  await otpService.verifyOtp(phone, String(code || ''), 'register');
   const passwordHash = await User.hashPassword(password);
-  const user = await User.create({ role, phone, passwordHash, firstName, lastName, email });
+  let user;
+  try {
+    user = await User.create({ role, phone, passwordHash, firstName, lastName, email, phoneVerified: true });
+  } catch (e) {
+    if (e && e.code === 11000) throw new AppError('PHONE_TAKEN', 'Phone already registered', 409);
+    throw e;
+  }
   if (role === 'CUSTOMER') await Customer.create({ userId: user._id });
   if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false });
-  // Nömrə təsdiqi (OTP) tələb olunmur: hesabı administrator təsdiqləyir. İstəsəniz /auth/verify-phone/resend ilə kod göndərilə bilər.
   return user;
+}
+
+/** Qeydiyyat üçün SMS kodu göndərir. Nömrə artıq qeydiyyatdadırsa kod göndərilmir. */
+async function requestRegisterOtp(phoneInput) {
+  const phone = normalizePhone(phoneInput);
+  if (!phone) throw new AppError('VALIDATION_ERROR', 'Telefon nömrəsi düzgün deyil', 400);
+  if (await User.findOne({ phone })) throw new AppError('PHONE_TAKEN', 'Phone already registered', 409);
+  const result = await otpService.requestOtp(phone, 'register');
+  return { sent: true, phone, ...result }; // devCode yalnız SMS açarı olmayan inkişaf mühitində
 }
 
 /** Giriş üçün nömrəni normallaşdırır; köhnə (normallaşdırılmamış) qeydləri də tapır. */
@@ -230,4 +246,4 @@ function publicUser(user) {
   };
 }
 
-module.exports = { register, login, loginWithOtp, refresh, logout, verifyPhone, resendVerification, requestPasswordReset, resetPassword, changePassword, publicUser, signAccess };
+module.exports = { register, requestRegisterOtp, login, loginWithOtp, refresh, logout, verifyPhone, resendVerification, requestPasswordReset, resetPassword, changePassword, publicUser, signAccess };

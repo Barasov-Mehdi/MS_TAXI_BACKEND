@@ -73,11 +73,26 @@ router.post(
 
 // ---- Parol ilə giriş: yalnız admin / sürücü üçün ----
 router.post(
+  '/register/otp',
+  otpRequestLimiter,
+  validate(Joi.object({ phone: Joi.string().trim().required() })),
+  async (req, res, next) => {
+    try {
+      ok(res, await authService.requestRegisterOtp(req.body.phone));
+    } catch (e) { next(e); }
+  }
+);
+
+router.post(
   '/register',
   registerLimiter,
   validate(Joi.object({
     role: Joi.string().valid('CUSTOMER', 'DRIVER').required(),
     phone: Joi.string().required(),
+    code: Joi.string().pattern(/^\d{6}$/).required().messages({
+      'string.pattern.base': 'Kod 6 rəqəmdən ibarət olmalıdır',
+      'any.required': 'SMS kodu tələb olunur',
+    }),
     password: Joi.string().min(6).required(),
     firstName: Joi.string().allow(''),
     lastName: Joi.string().allow(''),
