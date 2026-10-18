@@ -267,6 +267,56 @@ router.get('/stats', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Müştərilərin ən çox olduğu bölgə (xəritədə yaşıl dairə). Son HOTSPOT_WINDOW_MIN dəqiqədə yaranan
+// sifarişlərin götürmə nöqtələri sürücünün ətrafında şəbəkə hüceyrələrinə bölünür, ən sıx hüceyrə qaytarılır.
+const HOTSPOT_WINDOW_MIN = 30;
+const HOTSPOT_SEARCH_M = 10000; // sürücünün ətrafında axtarış radiusu
+const HOTSPOT_CELL_DEG = 0.006; // ≈ 650 m
+const HOTSPOT_MIN_COUNT = 2;
+const HOTSPOT_RADIUS_M = 500;
+
+router.get('/hotspot', async (req, res, next) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      return next(new AppError('VALIDATION_ERROR', 'lat/lng düzgün deyil', 400));
+    }
+    const since = new Date(Date.now() - HOTSPOT_WINDOW_MIN * 60000);
+    const rows = await Order.find({
+      createdAt: { $gte: since },
+      status: { $nin: [OrderStatus.ADMIN_CANCELLED] },
+      pickup: { $geoWithin: { $centerSphere: [[lng, lat], HOTSPOT_SEARCH_M / 6371000] } },
+    })
+      .select('pickup')
+      .limit(1000)
+      .lean();
+
+    const cells = new Map();
+    for (const r of rows) {
+      const c = r.pickup?.coordinates;
+      if (!c || c.length < 2) continue;
+      const key = `${Math.floor(c[0] / HOTSPOT_CELL_DEG)}:${Math.floor(c[1] / HOTSPOT_CELL_DEG)}`;
+      const cell = cells.get(key) || { n: 0, sx: 0, sy: 0 };
+      cell.n += 1;
+      cell.sx += c[0];
+      cell.sy += c[1];
+      cells.set(key, cell);
+    }
+    let best = null;
+    for (const cell of cells.values()) if (!best || cell.n > best.n) best = cell;
+
+    if (!best || best.n < HOTSPOT_MIN_COUNT) return ok(res, { hotspot: null });
+    ok(res, {
+      hotspot: {
+        center: [best.sx / best.n, best.sy / best.n], // [lng, lat]
+        radiusMeters: HOTSPOT_RADIUS_M,
+        count: best.n,
+      },
+    });
+  } catch (e) { next(e); }
+});
+
 // Tətbiq yenidən açılanda / bağlantı bərpa olunanda: gözləyən (vaxtı bitməmiş) təklif varsa qaytarılır.
 router.get('/offers/current', async (req, res, next) => {
   try {
