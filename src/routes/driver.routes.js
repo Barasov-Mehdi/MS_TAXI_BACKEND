@@ -267,20 +267,44 @@ router.get('/stats', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Müştərilərin ən çox olduğu bölgə (xəritədə yaşıl dairə). Üç siqnal birləşdirilir:
-//  1) tətbiqi indi açıq olan müştərilər (son HOTSPOT_APP_OPEN_MIN dəqiqədə konum göndərib) — çəki 1
-//  2) son HOTSPOT_WINDOW_MIN dəqiqədə verilmiş sifarişlər — çəki 2
-//  3) hələ sürücü gözləyən sifarişlər — çəki 4 (ən təcili tələb)
-// Nöqtələr şəbəkə hüceyrələrinə bölünür, ən yüksək xal alan hüceyrə qaytarılır.
+// Xəritədə iki bölgə göstərilir:
+//  YAŞIL  (hotspot)    — müştəri tələbinin çox olduğu yer. Üç siqnal birləşdirilir:
+//     1) tətbiqi indi açıq olan müştərilər (son HOTSPOT_APP_OPEN_MIN dəq. konum göndərib) — çəki 1
+//     2) son HOTSPOT_WINDOW_MIN dəqiqədə verilmiş sifarişlərin götürmə nöqtələri — çəki 2
+//     3) hələ sürücü gözləyən sifarişlərin götürmə nöqtələri — çəki 4
+//  SARI   (returnSpot) — yaxın zamanda səfərlərin BİTDİYİ (varış) yerlər. Müştəri evdən gedibsə,
+//     bir müddət sonra geri qayıtmaq üçün taksi çağıracaq: son RETURN_WINDOW_MIN dəqiqədə başlayan/bitən
+//     səfərlərin təyinat nöqtələri hüceyrələrə bölünür, ən sıx hüceyrə qaytarılır.
 const HOTSPOT_WINDOW_MIN = 30;
 const HOTSPOT_APP_OPEN_MIN = 3;
+const RETURN_WINDOW_MIN = 180;
 const HOTSPOT_SEARCH_M = 10000; // sürücünün ətrafında axtarış radiusu
 const HOTSPOT_CELL_DEG = 0.006; // ≈ 650 m
-const HOTSPOT_MIN_COUNT = 2; // dairənin görünməsi üçün hüceyrədə ən azı bu qədər müştəri/sifariş
+const HOTSPOT_MIN_COUNT = 2; // dairənin görünməsi üçün hüceyrədə ən azı bu qədər nöqtə
 const HOTSPOT_RADIUS_M = 500;
 const W_APP = 1;
 const W_ORDER = 2;
 const W_WAITING = 4;
+
+// items: [{ c: [lng, lat], w: çəki }] → ən yüksək xallı hüceyrə ({center, radiusMeters, count}) və ya null
+function pickBestCell(items) {
+  const cells = new Map();
+  for (const { c, w } of items) {
+    if (!c || c.length < 2) continue;
+    if (c[0] === 0 && c[1] === 0) continue; // konum hələ göndərilməyib (default [0,0])
+    const key = `${Math.floor(c[0] / HOTSPOT_CELL_DEG)}:${Math.floor(c[1] / HOTSPOT_CELL_DEG)}`;
+    const cell = cells.get(key) || { n: 0, score: 0, sx: 0, sy: 0 };
+    cell.n += 1;
+    cell.score += w;
+    cell.sx += c[0];
+    cell.sy += c[1];
+    cells.set(key, cell);
+  }
+  let best = null;
+  for (const cell of cells.values()) if (!best || cell.score > best.score) best = cell;
+  if (!best || best.n < HOTSPOT_MIN_COUNT) return null;
+  return { center: [best.sx / best.n, best.sy / best.n], radiusMeters: HOTSPOT_RADIUS_M, count: best.n };
+}
 
 router.get('/hotspot', async (req, res, next) => {
   try {
@@ -290,44 +314,34 @@ router.get('/hotspot', async (req, res, next) => {
       return next(new AppError('VALIDATION_ERROR', 'lat/lng düzgün deyil', 400));
     }
     const geo = { $geoWithin: { $centerSphere: [[lng, lat], HOTSPOT_SEARCH_M / 6371000] } };
-    const [orders, openCustomers] = await Promise.all([
+    const now = Date.now();
+    const returnSince = new Date(now - RETURN_WINDOW_MIN * 60000);
+    const [orders, openCustomers, tripOrders] = await Promise.all([
       Order.find({
-        createdAt: { $gte: new Date(Date.now() - HOTSPOT_WINDOW_MIN * 60000) },
+        createdAt: { $gte: new Date(now - HOTSPOT_WINDOW_MIN * 60000) },
         status: { $nin: [OrderStatus.ADMIN_CANCELLED] },
         pickup: geo,
       }).select('pickup status').limit(1000).lean(),
       Customer.find({
-        locationUpdatedAt: { $gte: new Date(Date.now() - HOTSPOT_APP_OPEN_MIN * 60000) },
+        locationUpdatedAt: { $gte: new Date(now - HOTSPOT_APP_OPEN_MIN * 60000) },
         location: geo,
       }).select('location').limit(1000).lean(),
+      Order.find({
+        status: {
+          $in: [OrderStatus.TRIP_STARTED, OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, OrderStatus.COMPLETED],
+        },
+        $or: [{ completedAt: { $gte: returnSince } }, { startedAt: { $gte: returnSince } }],
+        destination: geo,
+      }).select('destination').limit(1000).lean(),
     ]);
 
-    const cells = new Map(); // key -> { n, score, sx, sy }
-    const add = (c, weight) => {
-      if (!c || c.length < 2) return;
-      if (c[0] === 0 && c[1] === 0) return; // konum hələ göndərilməyib (default [0,0])
-      const key = `${Math.floor(c[0] / HOTSPOT_CELL_DEG)}:${Math.floor(c[1] / HOTSPOT_CELL_DEG)}`;
-      const cell = cells.get(key) || { n: 0, score: 0, sx: 0, sy: 0 };
-      cell.n += 1;
-      cell.score += weight;
-      cell.sx += c[0];
-      cell.sy += c[1];
-      cells.set(key, cell);
-    };
-    for (const o of orders) add(o.pickup?.coordinates, o.status === OrderStatus.SEARCHING_DRIVER ? W_WAITING : W_ORDER);
-    for (const c of openCustomers) add(c.location?.coordinates, W_APP);
+    const demand = [
+      ...orders.map((o) => ({ c: o.pickup?.coordinates, w: o.status === OrderStatus.SEARCHING_DRIVER ? W_WAITING : W_ORDER })),
+      ...openCustomers.map((c) => ({ c: c.location?.coordinates, w: W_APP })),
+    ];
+    const arrivals = tripOrders.map((o) => ({ c: o.destination?.coordinates, w: 1 }));
 
-    let best = null;
-    for (const cell of cells.values()) if (!best || cell.score > best.score) best = cell;
-
-    if (!best || best.n < HOTSPOT_MIN_COUNT) return ok(res, { hotspot: null });
-    ok(res, {
-      hotspot: {
-        center: [best.sx / best.n, best.sy / best.n], // [lng, lat]
-        radiusMeters: HOTSPOT_RADIUS_M,
-        count: best.n,
-      },
-    });
+    ok(res, { hotspot: pickBestCell(demand), returnSpot: pickBestCell(arrivals) });
   } catch (e) { next(e); }
 });
 
