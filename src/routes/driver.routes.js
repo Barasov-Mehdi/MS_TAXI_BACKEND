@@ -280,38 +280,48 @@ const HOTSPOT_APP_OPEN_MIN = 3;
 const RETURN_WINDOW_MIN = 180;
 const HOTSPOT_SEARCH_M = 10000; // sürücünün ətrafında axtarış radiusu
 const HOTSPOT_CLUSTER_M = 400; // bir kümədə nöqtələr arası maksimum məsafə
+const HOTSPOT_SEPARATION_M = 900; // iki dairənin mərkəzləri arası minimum məsafə
+const HOTSPOT_MAX_ZONES = 3; // hər rəngdən ən çox neçə dairə
 const HOTSPOT_MIN_COUNT = 2; // dairənin görünməsi üçün hüceyrədə ən azı bu qədər nöqtə
 const HOTSPOT_RADIUS_M = 500;
 const W_APP = 1;
 const W_ORDER = 2;
 const W_WAITING = 4;
 
-// items: [{ c: [lng, lat], w: çəki }] → ən sıx küme ({center, radiusMeters, count}) və ya null.
+// items: [{ c: [lng, lat], w: çəki }] → ən sıx kümələr (ən çoxu `max` ədəd, xalına görə sıralı).
 // Sabit şəbəkə əvəzinə "yaxınlıq" sayılır: hər nöqtənin HOTSPOT_CLUSTER_M daxilindəki qonşuları toplanır.
-// (Şəbəkədə iki yaxın nöqtə hüceyrə sərhədinin iki tərəfinə düşüb ayrı sayıla bilərdi.)
-function pickBestCell(items) {
-  const pts = items.filter(({ c }) => c && c.length >= 2 && !(c[0] === 0 && c[1] === 0));
-  if (!pts.length) return null;
-  const latRef = pts[0].c[1];
-  const kx = 111320 * Math.cos((latRef * Math.PI) / 180);
-  const ky = 111320;
-  let best = null;
-  for (const a of pts) {
-    let n = 0, score = 0, sx = 0, sy = 0;
-    for (const b of pts) {
-      const dx = (b.c[0] - a.c[0]) * kx;
-      const dy = (b.c[1] - a.c[1]) * ky;
-      if (dx * dx + dy * dy <= HOTSPOT_CLUSTER_M * HOTSPOT_CLUSTER_M) {
-        n += 1;
-        score += b.w;
-        sx += b.c[0];
-        sy += b.c[1];
+// Seçilmiş kümənin ətrafındakı (HOTSPOT_SEPARATION_M) nöqtələr atılır ki, dairələr üst-üstə düşməsin.
+function pickClusters(items, max = HOTSPOT_MAX_ZONES) {
+  let pts = items.filter(({ c }) => c && c.length >= 2 && !(c[0] === 0 && c[1] === 0));
+  const out = [];
+  while (pts.length && out.length < max) {
+    const latRef = pts[0].c[1];
+    const kx = 111320 * Math.cos((latRef * Math.PI) / 180);
+    const ky = 111320;
+    const dist2 = (p, q) => {
+      const dx = (p[0] - q[0]) * kx;
+      const dy = (p[1] - q[1]) * ky;
+      return dx * dx + dy * dy;
+    };
+    let best = null;
+    for (const a of pts) {
+      let n = 0, score = 0, sx = 0, sy = 0;
+      for (const b of pts) {
+        if (dist2(a.c, b.c) <= HOTSPOT_CLUSTER_M * HOTSPOT_CLUSTER_M) {
+          n += 1;
+          score += b.w;
+          sx += b.c[0];
+          sy += b.c[1];
+        }
       }
+      if (!best || score > best.score) best = { n, score, sx, sy };
     }
-    if (!best || score > best.score) best = { n, score, sx, sy };
+    if (!best || best.n < HOTSPOT_MIN_COUNT) break;
+    const center = [best.sx / best.n, best.sy / best.n];
+    out.push({ center, radiusMeters: HOTSPOT_RADIUS_M, count: best.n });
+    pts = pts.filter((p) => dist2(p.c, center) > HOTSPOT_SEPARATION_M * HOTSPOT_SEPARATION_M);
   }
-  if (!best || best.n < HOTSPOT_MIN_COUNT) return null;
-  return { center: [best.sx / best.n, best.sy / best.n], radiusMeters: HOTSPOT_RADIUS_M, count: best.n };
+  return out;
 }
 
 router.get('/hotspot', async (req, res, next) => {
@@ -349,7 +359,10 @@ router.get('/hotspot', async (req, res, next) => {
     ];
     const arrivals = tripOrders.map((o) => ({ c: o.destination?.coordinates, w: 1 }));
 
-    const out = { hotspot: pickBestCell(demand), returnSpot: pickBestCell(arrivals) };
+    const hotspots = pickClusters(demand);
+    const returnSpots = pickClusters(arrivals);
+    // hotspot/returnSpot: köhnə tətbiqlərlə uyğunluq (ən sıx bölgə)
+    const out = { hotspots, returnSpots, hotspot: hotspots[0] || null, returnSpot: returnSpots[0] || null };
     // Yoxlama üçün: /drivers/hotspot?lat=..&lng=..&debug=1 → neçə nöqtə tapıldığını göstərir (şəxsi məlumat yoxdur)
     if (req.query.debug === '1') out.debug = { orders: orders.length, openCustomers: openCustomers.length, arrivals: arrivals.length };
     ok(res, out);
