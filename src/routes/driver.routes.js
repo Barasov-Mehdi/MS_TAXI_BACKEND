@@ -7,7 +7,7 @@ const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
-const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User } = require('../models');
+const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const { publicUser } = require('../services/auth.service');
 
@@ -124,6 +124,27 @@ router.post('/offline', async (req, res, next) => {
     // Üzərində gözləyən təklif varsa, 20 san gözləmədən növbəti sürücüyə keçir.
     await dispatchService.advanceOffersOfDriver(req.driver._id, 'DRIVER_OFFLINE');
     ok(res, { driver: req.driver });
+  } catch (e) { next(e); }
+});
+
+// FCM cihaz tokeni: tətbiq açılanda / token yenilənəndə çağırılır.
+// Eyni token başqa sürücüdə qalıbsa (telefonda hesab dəyişib) oradan silinir ki, təklif səhv şəxsə getməsin.
+router.post('/device-token', async (req, res, next) => {
+  try {
+    const token = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+    if (token.length < 20 || token.length > 4096) {
+      throw new AppError('VALIDATION_ERROR', 'Invalid token', 400);
+    }
+    await Driver.updateMany({ fcmToken: token, _id: { $ne: req.driver._id } }, { $set: { fcmToken: null } });
+    await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: token, fcmTokenUpdatedAt: new Date() } });
+    ok(res, { saved: true });
+  } catch (e) { next(e); }
+});
+
+router.delete('/device-token', async (req, res, next) => {
+  try {
+    await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: null } });
+    ok(res, { removed: true });
   } catch (e) { next(e); }
 });
 

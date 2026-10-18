@@ -33,6 +33,10 @@ const driverSchema = new mongoose.Schema(
     // Dispatch: sürücü eyni anda yalnız bir sifariş təklifi ala bilər (atomik kilid, özü bitir).
     offerOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     offerLockUntil: { type: Date, default: null },
+    // FCM cihaz tokeni (arxa planda / ekran kilidli olanda təklifi tam ekran göstərmək üçün).
+    // select:false - API cavablarında (məs. /drivers/me) sızmasın.
+    fcmToken: { type: String, default: null, select: false },
+    fcmTokenUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -41,5 +45,6 @@ driverSchema.index({ location: '2dsphere' });
 driverSchema.index({ isOnline: 1, isActive: 1, isVerified: 1 });
 driverSchema.index({ isOnline: 1, locationUpdatedAt: 1 });
 driverSchema.index({ isOnline: 1, locationFixAt: 1 });
+driverSchema.index({ fcmToken: 1 }, { sparse: true });
 
 module.exports = mongoose.model('Driver', driverSchema);

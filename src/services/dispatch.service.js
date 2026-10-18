@@ -21,6 +21,7 @@ const { getSettings } = require('./settings.service');
 const matchingService = require('./matching.service');
 const promoService = require('./promo.service');
 const realtime = require('../websocket/emitter');
+const pushService = require('./push.service');
 const { haversineMeters } = require('../utils/geo');
 
 const DEFAULT_OFFER_SECONDS = 20;
@@ -68,6 +69,8 @@ async function initialDispatchFields(now = new Date()) {
 function notifyOfferEnded(driverId, orderId, reason) {
   if (!driverId) return;
   realtime.toDriver(driverId, 'order_offer_expired', { orderId, reason });
+  // Açıq tam ekran təklif pəncərəsini (arxa plan) bağlat
+  pushService.sendOfferEnded(driverId, orderId, reason).catch(() => {});
 }
 
 /* ------------------------------------------------------------------ */
@@ -242,15 +245,14 @@ async function advanceOffer(orderId, { reason = 'START', onlyIfDue = false, expe
   }
 
   if (next) {
-    realtime.toDriver(
-      next.driver._id,
-      'new_order',
-      buildOfferPayload(claimed, {
-        distanceToPickupMeters: Math.round(next.distanceMeters),
-        queued: next.hasActiveOrder,
-        now,
-      })
-    );
+    const offerPayload = buildOfferPayload(claimed, {
+      distanceToPickupMeters: Math.round(next.distanceMeters),
+      queued: next.hasActiveOrder,
+      now,
+    });
+    realtime.toDriver(next.driver._id, 'new_order', offerPayload);
+    // Tətbiq arxa planda / ekran kilidli olsa belə tam ekran təklif üçün push (socket-ə əlavə kanal)
+    pushService.sendOffer(next.driver._id, offerPayload).catch((e) => logError('push sendOffer failed', e));
   }
 
   return { advanced: true, order: claimed, driverId: next ? next.driver._id : null };
