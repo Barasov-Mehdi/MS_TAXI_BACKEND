@@ -106,6 +106,14 @@ function sendOffer(driverId, payload) {
       pickupLng: str(pickup.coordinates && pickup.coordinates[0]),
       destLat: str(dest.coordinates && dest.coordinates[1]),
       destLng: str(dest.coordinates && dest.coordinates[0]),
+      // Müştərinin seçdiyi dayanacaqlar (sonuncusu təyinat): [{a: ünvan, la, ln}]
+      stopsJson: JSON.stringify(
+        (payload.stops || []).slice(0, 5).map((s) => ({
+          a: String((s && (s.address || s.label)) || '').slice(0, 160),
+          la: s && s.lat,
+          ln: s && s.lng,
+        }))
+      ),
       paymentMethod: str(payload.paymentMethod),
       queued: payload.queued ? '1' : '0',
       offerExpiresAt: payload.offerExpiresAt ? new Date(payload.offerExpiresAt).toISOString() : '',
