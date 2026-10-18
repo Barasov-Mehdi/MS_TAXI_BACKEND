@@ -279,11 +279,12 @@ const HOTSPOT_WINDOW_MIN = 30;
 const HOTSPOT_APP_OPEN_MIN = 3;
 const RETURN_WINDOW_MIN = 180;
 const HOTSPOT_SEARCH_M = 10000; // sürücünün ətrafında axtarış radiusu
-const HOTSPOT_CLUSTER_M = 400; // bir kümədə nöqtələr arası maksimum məsafə
-const HOTSPOT_SEPARATION_M = 900; // iki dairənin mərkəzləri arası minimum məsafə
+const HOTSPOT_CLUSTER_M = 250; // bir kümədə: mərkəz nöqtəsindən maksimum məsafə
+const HOTSPOT_SEPARATION_M = 450; // iki dairənin mərkəzləri arası minimum məsafə
 const HOTSPOT_MAX_ZONES = 3; // hər rəngdən ən çox neçə dairə
 const HOTSPOT_MIN_COUNT = 2; // dairənin görünməsi üçün hüceyrədə ən azı bu qədər nöqtə
-const HOTSPOT_RADIUS_M = 500;
+const HOTSPOT_RADIUS_MIN_M = 150; // dairənin radiusu kümənin ölçüsünə görə seçilir
+const HOTSPOT_RADIUS_MAX_M = 300;
 const W_APP = 1;
 const W_ORDER = 2;
 const W_WAITING = 4;
@@ -298,28 +299,25 @@ function pickClusters(items, max = HOTSPOT_MAX_ZONES) {
     const latRef = pts[0].c[1];
     const kx = 111320 * Math.cos((latRef * Math.PI) / 180);
     const ky = 111320;
-    const dist2 = (p, q) => {
-      const dx = (p[0] - q[0]) * kx;
-      const dy = (p[1] - q[1]) * ky;
-      return dx * dx + dy * dy;
-    };
+    const dist = (p, q) => Math.hypot((p[0] - q[0]) * kx, (p[1] - q[1]) * ky);
     let best = null;
     for (const a of pts) {
-      let n = 0, score = 0, sx = 0, sy = 0;
-      for (const b of pts) {
-        if (dist2(a.c, b.c) <= HOTSPOT_CLUSTER_M * HOTSPOT_CLUSTER_M) {
-          n += 1;
-          score += b.w;
-          sx += b.c[0];
-          sy += b.c[1];
-        }
-      }
-      if (!best || score > best.score) best = { n, score, sx, sy };
+      const members = pts.filter((b) => dist(a.c, b.c) <= HOTSPOT_CLUSTER_M);
+      const score = members.reduce((s, m) => s + m.w, 0);
+      if (!best || score > best.score) best = { members, score };
     }
-    if (!best || best.n < HOTSPOT_MIN_COUNT) break;
-    const center = [best.sx / best.n, best.sy / best.n];
-    out.push({ center, radiusMeters: HOTSPOT_RADIUS_M, count: best.n });
-    pts = pts.filter((p) => dist2(p.c, center) > HOTSPOT_SEPARATION_M * HOTSPOT_SEPARATION_M);
+    if (!best || best.members.length < HOTSPOT_MIN_COUNT) break;
+    const n = best.members.length;
+    const center = [
+      best.members.reduce((s, m) => s + m.c[0], 0) / n,
+      best.members.reduce((s, m) => s + m.c[1], 0) / n,
+    ];
+    const spread = Math.max(...best.members.map((m) => dist(center, m.c)));
+    const radiusMeters = Math.round(
+      Math.min(HOTSPOT_RADIUS_MAX_M, Math.max(HOTSPOT_RADIUS_MIN_M, spread + 80)),
+    );
+    out.push({ center, radiusMeters, count: n });
+    pts = pts.filter((p) => dist(p.c, center) > HOTSPOT_SEPARATION_M);
   }
   return out;
 }
@@ -364,7 +362,7 @@ router.get('/hotspot', async (req, res, next) => {
     // hotspot/returnSpot: köhnə tətbiqlərlə uyğunluq (ən sıx bölgə)
     const out = { hotspots, returnSpots, hotspot: hotspots[0] || null, returnSpot: returnSpots[0] || null };
     // Yoxlama üçün: /drivers/hotspot?lat=..&lng=..&debug=1 → neçə nöqtə tapıldığını göstərir (şəxsi məlumat yoxdur)
-    if (req.query.debug === '1') out.debug = { orders: orders.length, openCustomers: openCustomers.length, arrivals: arrivals.length };
+    if (req.query.debug === '1') out.debug = { orders: orders.length, openCustomers: openCustomers.length, arrivals: arrivals.length, greenZones: hotspots.length, yellowZones: returnSpots.length };
     ok(res, out);
   } catch (e) { next(e); }
 });
