@@ -15,23 +15,40 @@ const { Driver } = require('../models');
 let messaging = null;
 let initTried = false;
 
+/**
+ * Açar dəyərini JSON obyektinə çevirir. Qəbul olunan formatlar:
+ *  - düz JSON ( { ... } )
+ *  - base64 ilə kodlanmış JSON
+ *  - ətrafında dırnaq olan yuxarıdakılardan biri
+ */
+function parseServiceAccount(raw) {
+  let v = String(raw || '').trim();
+  if (!v) return null;
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1).trim();
+  if (!v.startsWith('{')) v = Buffer.from(v, 'base64').toString('utf8').replace(/^\uFEFF/, '').trim();
+  const cred = JSON.parse(v);
+  if (cred.private_key) cred.private_key = String(cred.private_key).replace(/\\n/g, '\n');
+  if (!cred.project_id || !cred.client_email || !cred.private_key) {
+    throw new Error('service account JSON natamamdır (project_id / client_email / private_key)');
+  }
+  return cred;
+}
+
 function init() {
   if (initTried) return messaging;
   initTried = true;
   try {
-    let raw = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!raw && process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
-      raw = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8');
-    }
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_B64 || process.env.FIREBASE_SERVICE_ACCOUNT;
     if (!raw) {
       console.warn('[push] FIREBASE_SERVICE_ACCOUNT(_B64) təyin edilməyib: push söndürülüb');
       return null;
     }
     // eslint-disable-next-line global-require
     const admin = require('firebase-admin');
-    const cred = JSON.parse(raw);
+    const cred = parseServiceAccount(raw);
     const app = admin.apps.length ? admin.app() : admin.initializeApp({ credential: admin.credential.cert(cred) });
     messaging = admin.messaging(app);
+    console.log('[push] Firebase hazırdır, layihə:', cred.project_id);
   } catch (e) {
     console.error('[push] Firebase init alınmadı:', e && e.message ? e.message : e);
     messaging = null;
