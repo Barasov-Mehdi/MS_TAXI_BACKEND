@@ -279,29 +279,37 @@ const HOTSPOT_WINDOW_MIN = 30;
 const HOTSPOT_APP_OPEN_MIN = 3;
 const RETURN_WINDOW_MIN = 180;
 const HOTSPOT_SEARCH_M = 10000; // sürücünün ətrafında axtarış radiusu
-const HOTSPOT_CELL_DEG = 0.006; // ≈ 650 m
+const HOTSPOT_CLUSTER_M = 400; // bir kümədə nöqtələr arası maksimum məsafə
 const HOTSPOT_MIN_COUNT = 2; // dairənin görünməsi üçün hüceyrədə ən azı bu qədər nöqtə
 const HOTSPOT_RADIUS_M = 500;
 const W_APP = 1;
 const W_ORDER = 2;
 const W_WAITING = 4;
 
-// items: [{ c: [lng, lat], w: çəki }] → ən yüksək xallı hüceyrə ({center, radiusMeters, count}) və ya null
+// items: [{ c: [lng, lat], w: çəki }] → ən sıx küme ({center, radiusMeters, count}) və ya null.
+// Sabit şəbəkə əvəzinə "yaxınlıq" sayılır: hər nöqtənin HOTSPOT_CLUSTER_M daxilindəki qonşuları toplanır.
+// (Şəbəkədə iki yaxın nöqtə hüceyrə sərhədinin iki tərəfinə düşüb ayrı sayıla bilərdi.)
 function pickBestCell(items) {
-  const cells = new Map();
-  for (const { c, w } of items) {
-    if (!c || c.length < 2) continue;
-    if (c[0] === 0 && c[1] === 0) continue; // konum hələ göndərilməyib (default [0,0])
-    const key = `${Math.floor(c[0] / HOTSPOT_CELL_DEG)}:${Math.floor(c[1] / HOTSPOT_CELL_DEG)}`;
-    const cell = cells.get(key) || { n: 0, score: 0, sx: 0, sy: 0 };
-    cell.n += 1;
-    cell.score += w;
-    cell.sx += c[0];
-    cell.sy += c[1];
-    cells.set(key, cell);
-  }
+  const pts = items.filter(({ c }) => c && c.length >= 2 && !(c[0] === 0 && c[1] === 0));
+  if (!pts.length) return null;
+  const latRef = pts[0].c[1];
+  const kx = 111320 * Math.cos((latRef * Math.PI) / 180);
+  const ky = 111320;
   let best = null;
-  for (const cell of cells.values()) if (!best || cell.score > best.score) best = cell;
+  for (const a of pts) {
+    let n = 0, score = 0, sx = 0, sy = 0;
+    for (const b of pts) {
+      const dx = (b.c[0] - a.c[0]) * kx;
+      const dy = (b.c[1] - a.c[1]) * ky;
+      if (dx * dx + dy * dy <= HOTSPOT_CLUSTER_M * HOTSPOT_CLUSTER_M) {
+        n += 1;
+        score += b.w;
+        sx += b.c[0];
+        sy += b.c[1];
+      }
+    }
+    if (!best || score > best.score) best = { n, score, sx, sy };
+  }
   if (!best || best.n < HOTSPOT_MIN_COUNT) return null;
   return { center: [best.sx / best.n, best.sy / best.n], radiusMeters: HOTSPOT_RADIUS_M, count: best.n };
 }
@@ -341,7 +349,10 @@ router.get('/hotspot', async (req, res, next) => {
     ];
     const arrivals = tripOrders.map((o) => ({ c: o.destination?.coordinates, w: 1 }));
 
-    ok(res, { hotspot: pickBestCell(demand), returnSpot: pickBestCell(arrivals) });
+    const out = { hotspot: pickBestCell(demand), returnSpot: pickBestCell(arrivals) };
+    // Yoxlama üçün: /drivers/hotspot?lat=..&lng=..&debug=1 → neçə nöqtə tapıldığını göstərir (şəxsi məlumat yoxdur)
+    if (req.query.debug === '1') out.debug = { orders: orders.length, openCustomers: openCustomers.length, arrivals: arrivals.length };
+    ok(res, out);
   } catch (e) { next(e); }
 });
 
