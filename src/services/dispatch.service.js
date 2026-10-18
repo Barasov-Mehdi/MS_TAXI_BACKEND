@@ -107,11 +107,15 @@ async function releaseDriverLock(driverId, orderId) {
 /* ------------------------------------------------------------------ */
 
 function buildOfferPayload(order, { distanceToPickupMeters, queued, now }) {
+  const stopsArr = order.stops || [];
+  const lastStop = stopsArr[stopsArr.length - 1] || {};
   const remainingMs = order.offerExpiresAt ? order.offerExpiresAt.getTime() - now.getTime() : 0;
   return {
     orderId: order._id,
     pickup: order.pickup,
     destination: order.destination,
+    pickupAddress: order.pickupAddress || order.pickupLabel || '',
+    destinationAddress: lastStop.address || lastStop.label || '',
     stops: order.stops,
     distanceMeters: order.distanceMeters,
     distanceToPickupMeters,

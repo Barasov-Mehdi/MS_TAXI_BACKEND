@@ -13,6 +13,9 @@ const orderSchema = new mongoose.Schema(
       type: { type: String, enum: ['Point'], default: 'Point' },
       coordinates: { type: [Number], required: true },
     },
+    // Müştərinin göstərdiyi götürmə ünvanı (sürücü təklifində göstərilir)
+    pickupAddress: { type: String, default: '' },
+    pickupLabel: { type: String, default: '' },
     distanceMeters: { type: Number, required: true },
     durationMin: { type: Number, default: 0 },
     vehicleType: { type: String, default: 'basic' },

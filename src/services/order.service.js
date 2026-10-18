@@ -92,6 +92,8 @@ async function createOrder({
         customerId: customer._id,
         status: OrderStatus.SEARCHING_DRIVER,
         pickup: point(pickup.lng, pickup.lat),
+        pickupAddress: pickup.address ? String(pickup.address).slice(0, 300) : '',
+        pickupLabel: pickup.label ? String(pickup.label).slice(0, 200) : '',
         destination: point(destination.lng, destination.lat),
         distanceMeters,
         durationMin,
