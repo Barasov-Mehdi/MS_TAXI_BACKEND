@@ -8,7 +8,8 @@
     "dev": "nodemon src/server.js",
     "seed": "node src/jobs/seed.js",
     "test": "jest --runInBand",
-    "worker": "node src/queues/worker.js"
+    "worker": "node src/queues/worker.js",
+    "push:test": "node scripts/send-test-push.js"
   },
   "engines": {
     "node": ">=18"

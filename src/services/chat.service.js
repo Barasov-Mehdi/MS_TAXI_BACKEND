@@ -1,6 +1,7 @@
 const { Message, Order, Customer, Driver } = require('../models');
 const { AppError } = require('../utils/errors');
 const realtime = require('../websocket/emitter');
+const pushService = require('./push.service');
 
 const MAX_MESSAGE_LENGTH = 1000;
 
@@ -77,6 +78,18 @@ async function sendMessage({ orderId, senderUser, message, clientMessageId }) {
     clientMessageId: cid,
     createdAt: row.createdAt,
   });
+
+  // Alıcı sürücüdürsə: tətbiq arxa planda / bağlı olanda telefona bildiriş (FCM). Xəta mesajın göndərilməsinə təsir etmir.
+  if (order.driverId && receiverId === driverUserId) {
+    pushService
+      .notifyChatMessage(order.driverId, {
+        orderId: String(order._id),
+        messageId: String(row._id),
+        senderName: [senderUser.firstName].filter(Boolean).join(' ') || 'Sərnişin',
+        text,
+      })
+      .catch((e) => console.error('[push] chat bildirişi alınmadı', e && e.message));
+  }
   return row;
 }
 

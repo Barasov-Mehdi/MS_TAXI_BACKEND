@@ -11,6 +11,10 @@ const walletService = require('./wallet.service');
 const { getSettings } = require('./settings.service');
 const { normalizePhone } = require('../utils/validators');
 const realtime = require('../websocket/emitter');
+const pushService = require('./push.service');
+
+/** Push xətası əsas axını pozmasın. */
+const fireAndForget = (p) => Promise.resolve(p).catch((e) => console.error('[push]', e && e.message ? e.message : e));
 
 async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, reason, session) {
   await OrderStatusHistory.create(
@@ -267,6 +271,7 @@ async function acceptOrder({ orderId, driver, user }) {
       message: 'Şoförünüz şu anda mevcut yolculuğunu tamamlıyor. Yolculuğunu tamamladıktan sonra size doğru hareket edecek.',
     });
     realtime.toDriver(driverId, 'queued_order', { orderId: updated._id });
+    fireAndForget(pushService.notifyQueuedOrder(driverId, updated._id));
   } else {
     realtime.toCustomer(updated.customerId, 'driver_assigned', { orderId: updated._id, driverId });
     realtime.toCustomer(updated.customerId, 'order_status_changed', { orderId: updated._id, status: updated.status });
@@ -439,6 +444,8 @@ async function cancelOrder({ order, user, role, reason }) {
     if (before.currentOfferDriverId) {
       realtime.toDriver(before.currentOfferDriverId, 'order_cancelled', payload);
       realtime.toDriver(before.currentOfferDriverId, 'order_offer_expired', { orderId: order._id, reason: 'CANCELLED' });
+      // Tətbiq arxa planda ikən açıq tam ekran təklif pəncərəsi də bağlansın
+      fireAndForget(pushService.sendOfferEnded(before.currentOfferDriverId, order._id, 'CANCELLED'));
     }
     realtime.toOrder(order._id, 'order_cancelled', payload);
     realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id });
@@ -469,7 +476,11 @@ async function cancelOrder({ order, user, role, reason }) {
     }
     await session.commitTransaction();
     realtime.toOrder(order._id, 'order_cancelled', { orderId: order._id, status: to, reason });
-    if (order.driverId) realtime.toDriver(order.driverId, 'order_cancelled', { orderId: order._id });
+    if (order.driverId) {
+      realtime.toDriver(order.driverId, 'order_cancelled', { orderId: order._id });
+      // Sürücü özü ləğv edibsə bildiriş lazım deyil; sərnişin / admin ləğv edəndə telefona bildiriş gedir.
+      if (role !== 'DRIVER') fireAndForget(pushService.notifyOrderCancelled(order.driverId, order._id, role));
+    }
     realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id });
     return order;
   } catch (e) {
@@ -601,6 +612,11 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
   realtime.toOrder(order._id, 'order_status_changed', { orderId: order._id, status: updated.status, reassigned: true });
   realtime.toCustomer(updated.customerId, 'order_status_changed', { orderId: order._id, status: updated.status, reassigned: true });
   realtime.toDriver(outcome.newDriverId, 'new_order', { orderId: order._id, reassigned: true });
+  fireAndForget(pushService.notifyOrderAssigned(outcome.newDriverId, order._id));
+  if (before.driverId && String(before.driverId) !== String(outcome.newDriverId)) {
+    realtime.toDriver(before.driverId, 'order_cancelled', { orderId: order._id });
+    fireAndForget(pushService.notifyOrderRemoved(before.driverId, order._id));
+  }
   if (offeredDriverId && String(offeredDriverId) !== String(outcome.newDriverId)) {
     realtime.toDriver(offeredDriverId, 'order_offer_expired', { orderId: order._id, reason: 'REASSIGNED' });
   }

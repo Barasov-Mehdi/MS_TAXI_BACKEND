@@ -4,6 +4,8 @@ const { ok, AppError } = require('../utils/errors');
 const { getSettings, setSetting } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const walletService = require('../services/wallet.service');
+const pushService = require('../services/push.service');
+const realtime = require('../websocket/emitter');
 const {
   Order, Driver, Customer, User, Complaint, OrderIssue,
   PricingRule, PromoCode, WalletTransaction, AuditLog,
@@ -80,6 +82,13 @@ router.patch('/drivers/:id', async (req, res, next) => {
     }
     await driver.save();
     await audit(req, 'DRIVER_UPDATE', 'Driver', driver._id, old, driver.toObject(), req.body.reason);
+    // Hesab statusu dəyişibsə sürücüyə bildiriş (təsdiq / deaktiv)
+    if (old.isVerified !== driver.isVerified) {
+      pushService.notifyAccount(driver._id, driver.isVerified ? 'verified' : 'unverified').catch(() => {});
+    }
+    if (old.isActive !== driver.isActive) {
+      pushService.notifyAccount(driver._id, driver.isActive ? 'activated' : 'blocked').catch(() => {});
+    }
     ok(res, { driver });
   } catch (e) { next(e); }
 });
@@ -168,6 +177,18 @@ router.patch('/settings', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/** Admin əməliyyatından sonra sürücüyə bildiriş + canlı balans yeniləməsi (xəta əsas cavabı pozmasın). */
+function announceBalance(driverId, tx, kind) {
+  try {
+    realtime.toDriver(driverId, 'balance_updated', { balanceMinor: tx.balanceAfterMinor });
+    pushService
+      .notifyBalanceChange(driverId, { amountMinor: tx.amountMinor, balanceMinor: tx.balanceAfterMinor, kind })
+      .catch((e) => console.error('[push] balans bildirişi alınmadı', e && e.message));
+  } catch (e) {
+    console.error('[push] balans bildirişi alınmadı', e && e.message);
+  }
+}
+
 router.get('/wallet-transactions', async (req, res) => {
   const q = {};
   if (req.query.driverId) q.driverId = req.query.driverId;
@@ -187,6 +208,7 @@ router.post('/drivers/:id/wallet/top-up', async (req, res, next) => {
       createdBy: req.user._id,
     });
     await audit(req, 'WALLET_TOPUP', 'Driver', req.params.id, null, tx.toObject());
+    announceBalance(req.params.id, tx, 'TOP_UP');
     ok(res, { transaction: tx });
   } catch (e) { next(e); }
 });
@@ -204,6 +226,7 @@ router.post('/drivers/:id/wallet/adjustment', async (req, res, next) => {
       createdBy: req.user._id,
     });
     await audit(req, 'WALLET_ADJUST', 'Driver', req.params.id, null, tx.toObject(), req.body.reason);
+    announceBalance(req.params.id, tx, 'MANUAL_ADJUSTMENT');
     ok(res, { transaction: tx });
   } catch (e) { next(e); }
 });
