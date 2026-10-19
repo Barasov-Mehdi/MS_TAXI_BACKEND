@@ -9,6 +9,7 @@ const matchingService = require('./matching.service');
 const dispatchService = require('./dispatch.service');
 const walletService = require('./wallet.service');
 const { getSettings } = require('./settings.service');
+const { normalizePhone } = require('../utils/validators');
 const realtime = require('../websocket/emitter');
 
 async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, reason, session) {
@@ -16,6 +17,15 @@ async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, 
     [{ orderId, fromStatus, toStatus, actorRole, actorId, reason }],
     session ? { session } : {}
   );
+}
+
+/** "Başqası üçün sifariş": ad və nömrə sürücüyə göstərilir. Yanlış/natamam məlumat atılır. */
+function cleanPassenger(p) {
+  if (!p || p.forOther !== true) return { forOther: false, name: '', phone: '' };
+  const name = String(p.name || '').trim().slice(0, 60);
+  const phone = normalizePhone(p.phone) || '';
+  if (!name && !phone) return { forOther: false, name: '', phone: '' };
+  return { forOther: true, name, phone };
 }
 
 async function createOrder({
@@ -29,6 +39,7 @@ async function createOrder({
   durationMin: clientDuration,
   promoCode,
   paymentMethod,
+  passenger,
   idempotencyKey,
 }) {
   if (idempotencyKey) {
@@ -57,6 +68,11 @@ async function createOrder({
     },
   });
   if (active) throw new AppError('ACTIVE_ORDER_EXISTS', 'Customer already has an active order', 409);
+
+  // Hələlik onlayn ödəniş inteqrasiyası yoxdur: CARD/WALLET qəbul olunarsa sərnişin ödənişsiz gedə bilər.
+  if (paymentMethod && String(paymentMethod).toUpperCase() !== 'CASH') {
+    throw new AppError('PAYMENT_METHOD_UNSUPPORTED', 'Hazırda yalnız nağd ödəniş mövcuddur', 400);
+  }
 
   if (!pricingService.VEHICLE_TYPES.includes(vehicleType)) {
     throw new AppError('INVALID_VEHICLE_TYPE', 'Unknown vehicle type', 400);
@@ -100,6 +116,7 @@ async function createOrder({
         vehicleType,
         stops: stopList.map((s) => ({ lat: s.lat, lng: s.lng, label: s.label, address: s.address })),
         paymentMethod: paymentMethod || 'CASH',
+        passenger: cleanPassenger(passenger),
         promoCode: promoCode ? String(promoCode).toUpperCase() : null,
         pricingSnapshot: priced,
         idempotencyKey: idempotencyKey || null,
@@ -441,9 +458,12 @@ async function cancelOrder({ order, user, role, reason }) {
     await recordHistory(order._id, from, to, role, user._id, reason, session);
 
     if (order.driverId) {
+      // Yalnız BU sifarişə aid sahələr təmizlənir: növbədəki (QUEUED) sifariş ləğv olunanda sürücünün
+      // hazırda davam edən səfəri (currentOrderId) silinməməlidir.
+      await Driver.updateOne({ _id: order.driverId }, { $pull: { queuedOrderIds: order._id } }, { session });
       await Driver.updateOne(
-        { _id: order.driverId },
-        { $unset: { currentOrderId: '' }, $pull: { queuedOrderIds: order._id } },
+        { _id: order.driverId, currentOrderId: order._id },
+        { $set: { currentOrderId: null } },
         { session }
       );
     }
@@ -558,9 +578,11 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
       if (!before) throw new AppError('ORDER_STATE_CHANGED', 'Order state changed, please refresh', 409);
 
       if (before.driverId && !sameDriver) {
+        // Köhnə sürücünün başqa (davam edən) səfəri silinməsin: yalnız bu sifarişə aid sahələr təmizlənir.
+        await Driver.updateOne({ _id: before.driverId }, { $pull: { queuedOrderIds: order._id } }, { session });
         await Driver.updateOne(
-          { _id: before.driverId },
-          { $unset: { currentOrderId: '' }, $pull: { queuedOrderIds: order._id } },
+          { _id: before.driverId, currentOrderId: order._id },
+          { $set: { currentOrderId: null } },
           { session }
         );
       }
@@ -586,6 +608,7 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
 }
 
 module.exports = {
+  cleanPassenger,
   createOrder,
   acceptOrder,
   rejectOrder,

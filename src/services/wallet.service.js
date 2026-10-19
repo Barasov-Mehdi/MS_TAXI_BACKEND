@@ -11,6 +11,9 @@ const { percentOf } = require('../utils/money');
 async function applyTransaction({
   driverId, type, amountMinor, referenceType, referenceId,
   idempotencyKey, note, createdBy, session,
+  // true: bakiye mənfiyə düşə bilər (məs. artıq bitmiş səfərin komissiyası). Səfər başa çatıb,
+  // bakiye çatmır deyə onu bloklamaq olmaz - əks halda sürücü səfəri bitirə bilməz.
+  allowNegative = false,
 }) {
   const sess = session || null;
   const existing = await WalletTransaction.findOne({ idempotencyKey }).session(sess);
@@ -18,7 +21,7 @@ async function applyTransaction({
 
   const settings = await getSettings();
   const filter = { _id: driverId };
-  if (amountMinor < 0 && !settings.negativeBalanceAllowed) {
+  if (amountMinor < 0 && !settings.negativeBalanceAllowed && !allowNegative) {
     filter.$expr = { $gte: [{ $ifNull: ['$walletBalanceMinor', 0] }, -amountMinor] };
   }
 
@@ -85,6 +88,9 @@ async function applyTripCommission(driverId, order, session) {
       ? `Düşük puan komisyonu: %${rate} (o anki puan: ${ratingAvg.toFixed(2)})`
       : `Standart komisyon: %${rate}`,
     session,
+    // Səfər artıq bitib: komissiya bakiyədən çox olsa belə səfərin tamamlanmasına mane olmamalıdır.
+    // Bakiye mənfi olarsa matching.driverCanTakeNewOrder sürücünü yeni sifarişlərdən kənar saxlayır (LOW_BALANCE).
+    allowNegative: true,
   });
 }
 

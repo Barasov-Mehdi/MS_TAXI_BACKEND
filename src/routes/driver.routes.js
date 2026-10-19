@@ -10,6 +10,7 @@ const locationService = require('../services/location.service');
 const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const { publicUser } = require('../services/auth.service');
+const chatService = require('../services/chat.service');
 
 router.use(authenticate, requireRoles('DRIVER'));
 
@@ -32,7 +33,14 @@ async function withCustomers(input) {
     const obj = typeof o.toObject === 'function' ? o.toObject() : o;
     const u = byId.get(String(o.customerId));
     const name = [u?.firstName, u?.lastName].filter(Boolean).join(' ').trim() || u?.username || '';
-    return { ...obj, customerName: name, customerPhone: u?.phone || '' };
+    // Sifariş başqası üçün verilibsə sürücü həmin şəxsin adı/nömrəsi ilə əlaqə saxlayır.
+    const other = obj.passenger && obj.passenger.forOther ? obj.passenger : null;
+    return {
+      ...obj,
+      customerName: (other && other.name) || name,
+      customerPhone: (other && other.phone) || u?.phone || '',
+      forOther: Boolean(other),
+    };
   });
   return single ? out[0] : out;
 }
@@ -102,6 +110,16 @@ router.post('/online', async (req, res, next) => {
   try {
     if (!req.driver.isVerified || !req.driver.isActive) {
       throw new AppError('DRIVER_NOT_VERIFIED', 'Driver is not verified/active', 403);
+    }
+    // Balans çatmırsa sürücü onlayn olub heç vaxt sifariş almazdı (matching LOW_BALANCE ilə atlayır): açıq xəta göstərilir.
+    const st = await getSettings();
+    if (!st.negativeBalanceAllowed && (req.driver.walletBalanceMinor || 0) < (st.minimumDriverBalance || 0)) {
+      throw new AppError(
+        'LOW_BALANCE',
+        'Balansınız kifayət etmir. Sifariş almaq üçün balansı artırın',
+        403,
+        { balanceMinor: req.driver.walletBalanceMinor || 0, minimumMinor: st.minimumDriverBalance || 0 }
+      );
     }
     req.driver.isOnline = true;
     req.driver.onlineSince = new Date();
@@ -379,6 +397,47 @@ router.param('id', (req, res, next, id) => {
     return next(new AppError('ORDER_NOT_FOUND', 'Order not found', 404));
   }
   return next();
+});
+
+// Tətbiq yenidən açılanda: davam edən sifariş (sərnişin adı/nömrəsi ilə) və növbədəki sifarişlər.
+// Qeyd: '/orders/:id'-dən əvvəl təyin olunmalıdır.
+router.get('/orders/active', async (req, res, next) => {
+  try {
+    const driver = await Driver.findById(req.driver._id).lean();
+    const current = driver.currentOrderId ? await Order.findById(driver.currentOrderId) : null;
+    const queuedIds = driver.queuedOrderIds || [];
+    const queued = queuedIds.length ? await Order.find({ _id: { $in: queuedIds } }) : [];
+    ok(res, {
+      order: current ? await withCustomers(current) : null,
+      queued: await withCustomers(queued),
+    });
+  } catch (e) { next(e); }
+});
+
+router.get('/orders/:id', async (req, res, next) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.id, driverId: req.driver._id });
+    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    ok(res, { order: await withCustomers(order) });
+  } catch (e) { next(e); }
+});
+
+router.get('/orders/:id/messages', async (req, res, next) => {
+  try {
+    ok(res, { messages: await chatService.listMessages(req.params.id, req.user) });
+  } catch (e) { next(e); }
+});
+
+router.post('/orders/:id/messages', async (req, res, next) => {
+  try {
+    const msg = await chatService.sendMessage({
+      orderId: req.params.id,
+      senderUser: req.user,
+      message: req.body.message,
+      clientMessageId: req.body.clientMessageId,
+    });
+    ok(res, { message: msg }, {}, 201);
+  } catch (e) { next(e); }
 });
 
 router.post('/orders/:id/accept', async (req, res, next) => {

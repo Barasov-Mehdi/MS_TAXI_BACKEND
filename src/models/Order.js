@@ -22,6 +22,12 @@ const orderSchema = new mongoose.Schema(
     // Aralıq və son dayanacaqlar (sonuncusu destination ilə eynidir)
     stops: [{ lat: Number, lng: Number, label: String, address: String, _id: false }],
     paymentMethod: { type: String, enum: ['CASH', 'CARD', 'WALLET'], default: 'CASH' },
+    // Sifariş başqası üçün verilibsə: sürücü bu ad/nömrə ilə əlaqə saxlayır.
+    passenger: {
+      forOther: { type: Boolean, default: false },
+      name: { type: String, default: '' },
+      phone: { type: String, default: '' },
+    },
     promoCode: { type: String, default: null },
     promoUsageId: { type: mongoose.Schema.Types.ObjectId, ref: 'PromoUsage', default: null },
     pricingSnapshot: {

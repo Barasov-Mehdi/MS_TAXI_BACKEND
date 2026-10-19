@@ -150,6 +150,7 @@ router.post('/orders', async (req, res, next) => {
       durationMin: req.body.durationMin,
       promoCode,
       paymentMethod,
+      passenger: req.body.passenger,
       idempotencyKey: req.headers['idempotency-key'],
     });
     ok(res, { order }, {}, 201);
@@ -307,23 +308,17 @@ router.post('/orders/:id/issues', async (req, res, next) => {
 
 router.get('/orders/:id/messages', async (req, res, next) => {
   try {
-    const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
-    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    ok(res, { messages: await chatService.listMessages(order._id) });
+    ok(res, { messages: await chatService.listMessages(req.params.id, req.user) });
   } catch (e) { next(e); }
 });
 
 router.post('/orders/:id/messages', async (req, res, next) => {
   try {
-    const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
-    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    const driver = order.driverId ? await Driver.findById(order.driverId) : null;
     const msg = await chatService.sendMessage({
-      orderId: order._id,
+      orderId: req.params.id,
       senderUser: req.user,
-      receiverUserId: driver ? driver.userId : req.user._id,
       message: req.body.message,
-      clientMessageId: req.body.clientMessageId || `${Date.now()}`,
+      clientMessageId: req.body.clientMessageId,
     });
     ok(res, { message: msg }, {}, 201);
   } catch (e) { next(e); }

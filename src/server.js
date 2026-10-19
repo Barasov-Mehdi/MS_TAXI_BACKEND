@@ -6,6 +6,7 @@ const compression = require('compression');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const config = require('./config');
 const { errorHandler, notFoundHandler } = require('./utils/errors');
 const { attachWebsocket } = require('./websocket');
@@ -25,9 +26,23 @@ app.use(express.json({ limit: '1mb' }));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 // /health limitdən kənardadır: monitorinq/load balancer sorğuları kvotanı yemir.
 app.use('/health', require('./routes/health.routes'));
+// Limit giriş etmiş istifadəçi üzrə hesablanır (token imzası yoxlanılır). Mobil operatorlarda (CGNAT) onlarla sürücü
+// eyni IP ilə çıxır və hər sürücü tətbiqi dəqiqədə ~25 sorğu göndərir: yalnız IP üzrə limit hamısını bloklayardı.
+// Token yoxdursa/etibarsızdırsa IP üzrə qalır.
+const globalKey = (req) => {
+  const h = req.headers.authorization || '';
+  if (h.startsWith('Bearer ')) {
+    try {
+      const { sub } = jwt.verify(h.slice(7), config.jwt.accessSecret);
+      if (sub) return `u:${sub}`;
+    } catch (_) { /* IP-yə düş */ }
+  }
+  return `ip:${req.ip}`;
+};
 app.use(rateLimit({
   windowMs: 60_000,
   max: 300,
+  keyGenerator: globalKey,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: true },

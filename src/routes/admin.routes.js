@@ -72,7 +72,12 @@ router.patch('/drivers/:id', async (req, res, next) => {
     const driver = await Driver.findById(req.params.id);
     if (!driver) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
     const old = driver.toObject();
-    Object.assign(driver, req.body);
+    // Yalnız icazə verilən sahələr: body-dən bakiye, cari sifariş, FCM token və s. dəyişdirilə bilməz
+    // (bakiye üçün /wallet/top-up və /wallet/adjustment istifadə olunur - audit və idempotency ilə).
+    const ALLOWED = ['isVerified', 'isActive', 'priority', 'radiusMeters'];
+    for (const key of ALLOWED) {
+      if (req.body[key] !== undefined) driver[key] = req.body[key];
+    }
     await driver.save();
     await audit(req, 'DRIVER_UPDATE', 'Driver', driver._id, old, driver.toObject(), req.body.reason);
     ok(res, { driver });

@@ -120,9 +120,10 @@ function attachWebsocket(httpServer) {
     socket.on('unsubscribe_nearby', () => {});
 
     socket.on('message_send', safe(async (payload, cb) => {
+      // Alıcı serverdə təyin olunur; göndərən sifarişin iştirakçısı olmalıdır (chat.service yoxlayır).
       const row = await chatService.sendMessage({
-        orderId: payload.orderId, senderUser: user, receiverUserId: payload.receiverId,
-        message: payload.message, clientMessageId: payload.clientMessageId,
+        orderId: payload && payload.orderId, senderUser: user,
+        message: payload && payload.message, clientMessageId: payload && payload.clientMessageId,
       });
       if (typeof cb === 'function') cb({ ok: true, message: row });
     }));
