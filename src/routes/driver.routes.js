@@ -67,11 +67,16 @@ async function limits() {
 // DİQQƏT: User sənədi birbaşa qaytarılmır (passwordHash, OTP/reset kodları sızmasın).
 router.get('/me', async (req, res, next) => {
   try {
+    const lim = await limits();
+    const driver = req.driver.toObject();
+    // Köhnə sənədlərdə radius admin həddindən böyük ola bilər (məs. 45000 → tətbiqdə "45.0 km"):
+    // axtarışda onsuz da maxDriverRadius ilə məhdudlaşır, ona görə tətbiqə real işləyən dəyər qaytarılır.
+    if (lim.maxDriverRadius && driver.radiusMeters > lim.maxDriverRadius) driver.radiusMeters = lim.maxDriverRadius;
     ok(res, {
       user: publicUser(req.user),
-      driver: req.driver,
+      driver,
       vehicle: await loadVehicle(req.driver),
-      limits: await limits(),
+      limits: lim,
     });
   } catch (e) { next(e); }
 });

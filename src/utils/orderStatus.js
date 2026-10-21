@@ -31,6 +31,8 @@ const ALLOWED_TRANSITIONS = {
   ],
   [OrderStatus.DRIVER_ASSIGNED]: [
     OrderStatus.DRIVER_ON_THE_WAY,
+    // Köhnə (admin təyin etdiyi) sifarişlər bu vəziyyətdə ilişib qalmasın: sürücü birbaşa "çatdım" deyə bilər
+    OrderStatus.DRIVER_ARRIVED,
     OrderStatus.DRIVER_CANCELLED,
     OrderStatus.CUSTOMER_CANCELLED,
     OrderStatus.ADMIN_CANCELLED,

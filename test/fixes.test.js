@@ -57,6 +57,8 @@ describe('order.service.cancelOrder - QUEUED', () => {
       _id: 'queuedOrder', status: 'QUEUED', driverId: 'drv', customerId: 'cus', version: 0,
       save: jest.fn().mockResolvedValue(),
     };
+    // Sürücünün hələ cari səfəri var: növbədən heç nə aktivləşdirilmir
+    models.Driver.findById.mockReturnValue(chainable({ _id: 'drv', currentOrderId: 'currentTrip', queuedOrderIds: [] }));
     await orderService.cancelOrder({ order, user: { _id: 'u1' }, role: 'CUSTOMER', reason: 'x' });
     const calls = models.Driver.updateOne.mock.calls;
     const unsetsCurrent = calls.find(([, update]) => update.$set && 'currentOrderId' in update.$set);
@@ -64,6 +66,30 @@ describe('order.service.cancelOrder - QUEUED', () => {
     expect(calls.some(([, update]) => update.$unset)).toBe(false);
     expect(calls.some(([, update]) => update.$pull && update.$pull.queuedOrderIds === 'queuedOrder')).toBe(true);
     expect(session.commitTransaction).toHaveBeenCalled();
+  });
+});
+
+describe('order.service.cancelOrder - cari səfər ləğvi növbəni aktivləşdirir', () => {
+  const mongoose = require('mongoose');
+  const orderService = require('../src/services/order.service');
+
+  test('cari səfər ləğv olunanda növbədəki QUEUED sifariş DRIVER_HEADING_TO_CUSTOMER olur', async () => {
+    jest.clearAllMocks();
+    const session = { startTransaction: jest.fn(), commitTransaction: jest.fn(), abortTransaction: jest.fn(), endSession: jest.fn() };
+    jest.spyOn(mongoose, 'startSession').mockResolvedValue(session);
+    const drv = { _id: 'drv', currentOrderId: null, queuedOrderIds: ['q1'], save: jest.fn().mockResolvedValue() };
+    const queued = { _id: 'q1', status: 'QUEUED', customerId: 'cus2', version: 0, save: jest.fn().mockResolvedValue() };
+    models.Driver.findById.mockReturnValue(chainable(drv));
+    models.Order.findById.mockReturnValue(chainable(queued));
+    const order = {
+      _id: 'trip', status: 'TRIP_STARTED', driverId: 'drv', customerId: 'cus', version: 0,
+      save: jest.fn().mockResolvedValue(),
+    };
+    await orderService.cancelOrder({ order, user: { _id: 'u1' }, role: 'CUSTOMER', reason: 'x' });
+    expect(queued.status).toBe('DRIVER_HEADING_TO_CUSTOMER');
+    expect(drv.currentOrderId).toBe('q1');
+    expect(drv.queuedOrderIds).toEqual([]);
+    expect(realtime.toDriver).toHaveBeenCalledWith('drv', 'queued_order_activated', { orderId: 'q1' });
   });
 });
 

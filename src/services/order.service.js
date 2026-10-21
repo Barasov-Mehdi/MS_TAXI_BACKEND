@@ -23,6 +23,51 @@ async function recordHistory(orderId, fromStatus, toStatus, actorRole, actorId, 
   );
 }
 
+/**
+ * Sürücünün aktiv sifarişi (currentOrderId) boşalıbsa, növbədəki ilk QUEUED sifarişi aktivləşdirir.
+ * Əvvəl bu yalnız completeTrip-də edilirdi: cari səfər LƏĞV olunanda növbədəki sifariş əbədi QUEUED qalırdı.
+ * Session daxilində işləyir; bildirişlər commit-dən sonra announceQueuedActivated ilə göndərilir.
+ */
+async function activateNextQueued(driverId, session) {
+  if (!driverId) return null;
+  const drv = await Driver.findById(driverId).session(session);
+  if (!drv || drv.currentOrderId) return null;
+  const ids = [...(drv.queuedOrderIds || [])];
+  for (const qid of ids) {
+    drv.queuedOrderIds = (drv.queuedOrderIds || []).filter((id) => String(id) !== String(qid));
+    const queued = await Order.findById(qid).session(session);
+    if (queued && queued.status === OrderStatus.QUEUED) {
+      assertTransition(queued.status, OrderStatus.DRIVER_HEADING_TO_CUSTOMER);
+      queued.status = OrderStatus.DRIVER_HEADING_TO_CUSTOMER;
+      queued.version += 1;
+      await queued.save({ session });
+      drv.currentOrderId = queued._id;
+      await drv.save({ session });
+      await recordHistory(queued._id, OrderStatus.QUEUED, OrderStatus.DRIVER_HEADING_TO_CUSTOMER, 'SYSTEM', null, 'auto-activate', session);
+      return queued;
+    }
+  }
+  await drv.save({ session });
+  return null;
+}
+
+function announceQueuedActivated(driverId, queued) {
+  if (!queued) return;
+  realtime.toCustomer(queued.customerId, 'queued_order_activated', {
+    orderId: queued._id,
+    message: 'Sürücünüz cari səfərini bitirdi və indi sizə doğru gəlir.',
+  });
+  realtime.toCustomer(queued.customerId, 'order_status_changed', {
+    orderId: queued._id,
+    status: OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
+  });
+  realtime.toDriver(driverId, 'queued_order_activated', { orderId: queued._id });
+  realtime.toOrder(queued._id, 'order_status_changed', {
+    orderId: queued._id,
+    status: OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
+  });
+}
+
 /** "Başqası üçün sifariş": ad və nömrə sürücüyə göstərilir. Yanlış/natamam məlumat atılır. */
 function cleanPassenger(p) {
   if (!p || p.forOther !== true) return { forOther: false, name: '', phone: '' };
@@ -268,7 +313,7 @@ async function acceptOrder({ orderId, driver, user }) {
     realtime.toCustomer(updated.customerId, 'order_status_changed', {
       orderId: updated._id,
       status: OrderStatus.DRIVER_FINISHING_CURRENT_TRIP,
-      message: 'Şoförünüz şu anda mevcut yolculuğunu tamamlıyor. Yolculuğunu tamamladıktan sonra size doğru hareket edecek.',
+      message: 'Sürücünüz hazırda cari səfərini bitirir. Səfəri bitirdikdən sonra sizə doğru hərəkət edəcək.',
     });
     realtime.toDriver(driverId, 'queued_order', { orderId: updated._id });
     fireAndForget(pushService.notifyQueuedOrder(driverId, updated._id));
@@ -361,35 +406,22 @@ async function completeTrip({ orderId, driver, user }) {
     await order.save({ session });
     await recordHistory(order._id, OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, 'SYSTEM', user._id, 'awaiting rating', session);
 
+    // Sürücünü azad et (yalnız bu sifariş cari idisə) və növbədəki sifarişi aktivləşdir
+    await Driver.updateOne(
+      { _id: driver._id },
+      { $pull: { queuedOrderIds: order._id } },
+      { session }
+    );
+    await Driver.updateOne(
+      { _id: driver._id, currentOrderId: order._id },
+      { $set: { currentOrderId: null } },
+      { session }
+    );
+    const activated = await activateNextQueued(driver._id, session);
     const drv = await Driver.findById(driver._id).session(session);
-    drv.currentOrderId = null;
-    drv.queuedOrderIds = (drv.queuedOrderIds || []).filter((id) => String(id) !== String(order._id));
-
-    const nextQueuedId = drv.queuedOrderIds[0];
-    if (nextQueuedId) {
-      const queued = await Order.findById(nextQueuedId).session(session);
-      if (queued && queued.status === OrderStatus.QUEUED) {
-        assertTransition(queued.status, OrderStatus.DRIVER_HEADING_TO_CUSTOMER);
-        queued.status = OrderStatus.DRIVER_HEADING_TO_CUSTOMER;
-        queued.version += 1;
-        await queued.save({ session });
-        drv.currentOrderId = queued._id;
-        drv.queuedOrderIds = drv.queuedOrderIds.filter((id) => String(id) !== String(queued._id));
-        await recordHistory(queued._id, OrderStatus.QUEUED, OrderStatus.DRIVER_HEADING_TO_CUSTOMER, 'SYSTEM', null, 'auto-activate', session);
-        realtime.toCustomer(queued.customerId, 'queued_order_activated', {
-          orderId: queued._id,
-          message: 'Şoförünüz mevcut yolculuğunu tamamladı ve şimdi size doğru geliyor.',
-        });
-        realtime.toDriver(drv._id, 'queued_order_activated', { orderId: queued._id });
-        realtime.toOrder(queued._id, 'order_status_changed', {
-          orderId: queued._id,
-          status: OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
-        });
-      }
-    }
-    await drv.save({ session });
     await session.commitTransaction();
 
+    announceQueuedActivated(driver._id, activated);
     realtime.toOrder(order._id, 'trip_completed', { orderId: order._id });
     realtime.toCustomer(order.customerId, 'trip_completed', { orderId: order._id });
     realtime.toDriver(driver._id, 'balance_updated', { balanceMinor: drv.walletBalanceMinor });
@@ -454,6 +486,7 @@ async function cancelOrder({ order, user, role, reason }) {
 
   const session = await mongoose.startSession();
   session.startTransaction();
+  let activated = null;
   try {
     const from = order.status;
     order.status = to;
@@ -473,8 +506,11 @@ async function cancelOrder({ order, user, role, reason }) {
         { $set: { currentOrderId: null } },
         { session }
       );
+      // Cari səfər ləğv olundusa növbədəki sifariş "QUEUED"-də ilişib qalmasın
+      activated = await activateNextQueued(order.driverId, session);
     }
     await session.commitTransaction();
+    announceQueuedActivated(order.driverId, activated);
     realtime.toOrder(order._id, 'order_cancelled', { orderId: order._id, status: to, reason });
     if (order.driverId) {
       realtime.toDriver(order.driverId, 'order_cancelled', { orderId: order._id });
@@ -580,7 +616,9 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
             offerExpiresAt: null,
             dispatchDueAt: null,
             driverId: newDriver._id,
-            status: OrderStatus.DRIVER_ASSIGNED,
+            // Sürücü tətbiqində DRIVER_ASSIGNED üçün düymə yoxdur (arrive yalnız ON_THE_WAY-dən): adi qəbul kimi birbaşa "yolda".
+            status: OrderStatus.DRIVER_ON_THE_WAY,
+            acceptedAt: new Date(),
           },
           $inc: { version: 1, dispatchSeq: 1 },
         },
@@ -597,15 +635,22 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
           { session }
         );
       }
-      await Driver.updateOne({ _id: newDriver._id }, { $set: { currentOrderId: order._id } }, { session });
+      await Driver.updateOne(
+        { _id: newDriver._id },
+        { $set: { currentOrderId: order._id }, $pull: { queuedOrderIds: order._id } },
+        { session }
+      );
       await recordHistory(order._id, before.status, OrderStatus.DRIVER_ASSIGNED, 'ADMIN', adminUser._id, reason, session);
-      outcome = { before, newDriverId: newDriver._id };
+      await recordHistory(order._id, OrderStatus.DRIVER_ASSIGNED, OrderStatus.DRIVER_ON_THE_WAY, 'SYSTEM', adminUser._id, 'admin reassign', session);
+      const oldDriverActivated = before.driverId && !sameDriver ? await activateNextQueued(before.driverId, session) : null;
+      outcome = { before, newDriverId: newDriver._id, oldDriverActivated };
     });
   } finally {
     session.endSession();
   }
 
   const { before } = outcome;
+  announceQueuedActivated(before.driverId, outcome.oldDriverActivated);
   const offeredDriverId = before.currentOfferDriverId;
   await dispatchService.releaseDriverLock(offeredDriverId, order._id);
   const updated = await Order.findById(order._id);
@@ -634,5 +679,6 @@ module.exports = {
   cancelOrder,
   rateOrder,
   adminReassign,
+  activateNextQueued,
   isActive,
 };

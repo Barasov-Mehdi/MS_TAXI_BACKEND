@@ -5,6 +5,7 @@ const { getSettings, setSetting } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const walletService = require('../services/wallet.service');
 const pushService = require('../services/push.service');
+const dispatchService = require('../services/dispatch.service');
 const realtime = require('../websocket/emitter');
 const {
   Order, Driver, Customer, User, Complaint, OrderIssue,
@@ -80,7 +81,17 @@ router.patch('/drivers/:id', async (req, res, next) => {
     for (const key of ALLOWED) {
       if (req.body[key] !== undefined) driver[key] = req.body[key];
     }
+    // Təsdiqi götürülən / bloklanan sürücü onlayn qalmasın: əks halda tətbiqdə "Onlayn" görünür, amma heç vaxt sifariş almır.
+    const lostAccess = driver.isOnline && (!driver.isVerified || !driver.isActive);
+    if (lostAccess) {
+      driver.isOnline = false;
+      driver.onlineSince = null;
+    }
     await driver.save();
+    if (lostAccess) {
+      realtime.toDriver(driver._id, 'driver_offline', { reason: driver.isActive ? 'NOT_VERIFIED' : 'BLOCKED' });
+      await dispatchService.advanceOffersOfDriver(driver._id, 'DRIVER_OFFLINE').catch(() => {});
+    }
     await audit(req, 'DRIVER_UPDATE', 'Driver', driver._id, old, driver.toObject(), req.body.reason);
     // Hesab statusu dəyişibsə sürücüyə bildiriş (təsdiq / deaktiv)
     if (old.isVerified !== driver.isVerified) {
@@ -238,8 +249,20 @@ router.get('/audit-logs', async (req, res) => {
 router.post('/users/:id/disable', async (req, res, next) => {
   try {
     const user = await User.findById(req.params.id);
+    if (!user) throw new AppError('USER_NOT_FOUND', 'User not found', 404);
     user.isActive = false;
     await user.save();
+    if (user.role === 'DRIVER') {
+      const drv = await Driver.findOneAndUpdate(
+        { userId: user._id, isOnline: true },
+        { $set: { isOnline: false, onlineSince: null } },
+        { new: true }
+      );
+      if (drv) {
+        realtime.toDriver(drv._id, 'driver_offline', { reason: 'BLOCKED' });
+        await dispatchService.advanceOffersOfDriver(drv._id, 'DRIVER_OFFLINE').catch(() => {});
+      }
+    }
     await audit(req, 'USER_DISABLE', 'User', user._id, true, false, req.body.reason);
     ok(res, { user });
   } catch (e) { next(e); }
