@@ -53,16 +53,26 @@ test('DRIVER_ON_THE_WAY sifarişini sürücü ləğv edir → SEARCHING_DRIVER v
   expect(realtime.toDriver).not.toHaveBeenCalledWith('drv', 'order_cancelled', expect.anything());
 });
 
-test('səfər başlayıbsa (TRIP_STARTED) sürücü ləğvi adi ləğvdir, ötürülmür', async () => {
+test('səfər başlayıbsa (TRIP_STARTED) sürücü ləğv edə bilməz', async () => {
+  const order = { _id: 'o2', status: 'TRIP_STARTED', driverId: 'drv', customerId: 'cus', version: 0, save: jest.fn() };
+  await expect(orderService.cancelOrder({ order, user: { _id: 'u' }, role: 'DRIVER', reason: 'x' })).rejects.toMatchObject({
+    code: 'TRIP_IN_PROGRESS',
+    status: 409,
+  });
+  expect(order.status).toBe('TRIP_STARTED');
+  expect(order.save).not.toHaveBeenCalled();
+  expect(dispatch.startDispatch).not.toHaveBeenCalled();
+});
+
+test('admin səfər zamanı da ləğv edə bilər', async () => {
   const order = {
-    _id: 'o2', status: 'TRIP_STARTED', driverId: 'drv', customerId: 'cus', version: 0, redispatchCount: 0,
+    _id: 'o5', status: 'TRIP_STARTED', driverId: 'drv', customerId: 'cus', version: 0,
     save: jest.fn().mockResolvedValue(),
   };
   const session = { startTransaction: jest.fn(), commitTransaction: jest.fn(), abortTransaction: jest.fn(), endSession: jest.fn() };
   mongoose.startSession.mockResolvedValue(session);
-  await orderService.cancelOrder({ order, user: { _id: 'u' }, role: 'DRIVER', reason: 'x' });
-  expect(order.status).toBe('DRIVER_CANCELLED');
-  expect(dispatch.startDispatch).not.toHaveBeenCalled();
+  await orderService.cancelOrder({ order, user: { _id: 'admin' }, role: 'ADMIN', reason: 'x' });
+  expect(order.status).toBe('ADMIN_CANCELLED');
 });
 
 test('maxRedispatch həddi keçilibsə sifariş həqiqətən ləğv olunur', async () => {

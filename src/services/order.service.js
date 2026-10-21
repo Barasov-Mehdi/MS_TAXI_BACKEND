@@ -545,6 +545,15 @@ async function redispatchAfterDriverCancel({ order, user, reason }) {
 }
 
 async function cancelOrder({ order, user, role, reason }) {
+  // Səfər başlayıb (sərnişin maşındadır): sürücü sifarişi ləğv edə bilməz. Problem varsa "Problem bildir"
+  // ilə admina xəbər verir, lazım olsa admin ləğv edir.
+  if (role === 'DRIVER' && order.status === OrderStatus.TRIP_STARTED) {
+    throw new AppError(
+      'TRIP_IN_PROGRESS',
+      'Səfər başlayıb, sifarişi ləğv etmək olmaz. Problem varsa "Problem bildir" bölməsindən xəbər verin',
+      409
+    );
+  }
   // Sürücü qəbul etdiyi (hələ başlamamış) sifarişi ləğv edir → növbəti sürücüyə ötürülür
   if (role === 'DRIVER' && REDISPATCHABLE.has(order.status) && order.driverId) {
     const settings = await getSettings();
