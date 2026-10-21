@@ -3,6 +3,7 @@ const { authenticate, requireRoles } = require('../middleware/auth');
 const { ok, AppError } = require('../utils/errors');
 const { getSettings, setSetting } = require('../services/settings.service');
 const orderService = require('../services/order.service');
+const { isActive } = require('../utils/orderStatus');
 const walletService = require('../services/wallet.service');
 const pushService = require('../services/push.service');
 const dispatchService = require('../services/dispatch.service');
@@ -31,8 +32,40 @@ async function audit(req, action, entityType, entityId, oldValue, newValue, reas
 router.get('/orders', async (req, res) => {
   const q = {};
   if (req.query.status) q.status = req.query.status;
+  // Silinmiş (yumşaq) sifarişlər standart olaraq göstərilmir: ?includeDeleted=1 ilə görünür
+  if (req.query.includeDeleted !== '1') q.deletedAt = null;
   const orders = await Order.find(q).sort({ createdAt: -1 }).limit(100);
   ok(res, { orders });
+});
+
+/**
+ * Sifarişi SİL (yumşaq silmə). Bazadan əl ilə silmək əvəzinə bunu istifadə edin:
+ * sənəd qalır (deletedAt qoyulur), admin siyahısında görünmür, sürücünün qazanc/statistikası pozulmur.
+ * Aktiv sifarişdirsə əvvəlcə admin tərəfindən ləğv olunur.
+ */
+router.delete('/orders/:id', async (req, res, next) => {
+  try {
+    let order = await Order.findById(req.params.id);
+    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    if (!order.deletedAt) {
+      if (isActive(order.status) && !['TRIP_COMPLETED', 'RATING_PENDING', 'DISPUTED', 'WAITING_FOR_ADMIN'].includes(order.status)) {
+        order = await orderService.cancelOrder({ order, user: req.user, role: 'ADMIN', reason: req.body?.reason || 'Admin tərəfindən silindi' });
+      }
+      await Order.updateOne({ _id: order._id }, { $set: { deletedAt: new Date() } });
+      await audit(req, 'ORDER_DELETE', 'Order', order._id, null, { deletedAt: true }, req.body?.reason);
+    }
+    ok(res, { deleted: true });
+  } catch (e) { next(e); }
+});
+
+/** Silinmiş sifarişi geri qaytar. */
+router.post('/orders/:id/restore', async (req, res, next) => {
+  try {
+    const r = await Order.updateOne({ _id: req.params.id }, { $set: { deletedAt: null } });
+    if (!r.matchedCount) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    await audit(req, 'ORDER_RESTORE', 'Order', req.params.id, null, null);
+    ok(res, { restored: true });
+  } catch (e) { next(e); }
 });
 
 router.get('/orders/:id', async (req, res, next) => {

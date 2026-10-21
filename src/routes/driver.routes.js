@@ -7,7 +7,7 @@ const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
-const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver } = require('../models');
+const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver, TripEarning } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const { publicUser } = require('../services/auth.service');
 const chatService = require('../services/chat.service');
@@ -61,7 +61,18 @@ async function loadVehicle(driver) {
 // Tətbiqin ehtiyac duyduğu limitlər (radius yuxarı həddi və s.)
 async function limits() {
   const st = await getSettings();
-  return { maxDriverRadius: st.maxDriverRadius, defaultDriverRadius: st.defaultDriverRadius };
+  return {
+    maxDriverRadius: st.maxDriverRadius,
+    defaultDriverRadius: st.defaultDriverRadius,
+    // Tətbiq tarifi buradan göstərir (sabit kod yox): admin ayarı dəyişəndə tətbiq də dəyişir
+    commission: {
+      type: st.tripCommissionType === 'FIXED' ? 'FIXED' : 'PERCENTAGE',
+      normal: Number(st.tripCommission ?? 10),
+      low: Number(st.lowRatingCommission ?? 15),
+      threshold: Number(st.ratingThreshold ?? 3),
+      lowInclusive: st.lowRatingInclusive !== false,
+    },
+  };
 }
 
 // DİQQƏT: User sənədi birbaşa qaytarılmır (passwordHash, OTP/reset kodları sızmasın).
@@ -268,23 +279,32 @@ router.get('/stats', async (req, res, next) => {
     const since = new Date(Date.now() - (days + 1) * 86400000);
     const dayExpr = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: STATS_TZ } });
 
-    const [orderRows, commRows] = await Promise.all([
-      Order.aggregate([
-        { $match: { driverId: req.driver._id, status: { $in: DONE }, completedAt: { $gte: since } } },
-        { $group: { _id: dayExpr('$completedAt'), trips: { $sum: 1 }, grossMinor: { $sum: { $ifNull: ['$pricingSnapshot.finalPriceMinor', 0] } } } },
-      ]),
-      WalletTransaction.aggregate([
-        { $match: { driverId: req.driver._id, type: 'TRIP_COMMISSION', createdAt: { $gte: since } } },
-        { $group: { _id: dayExpr('$createdAt'), commissionMinor: { $sum: { $abs: '$amountMinor' } } } },
-      ]),
+    // Statistika qazanc jurnalından (TripEarning) hesablanır: sifariş bazadan silinsə də rəqəmlər itmir.
+    const rows = await TripEarning.aggregate([
+      { $match: { driverId: req.driver._id, completedAt: { $gte: since } } },
+      {
+        $group: {
+          _id: dayExpr('$completedAt'),
+          trips: { $sum: 1 },
+          grossMinor: { $sum: '$grossMinor' },
+          commissionMinor: { $sum: '$commissionMinor' },
+          distanceMeters: { $sum: '$distanceMeters' },
+        },
+      },
     ]);
-    const o = new Map(orderRows.map((r) => [r._id, r]));
-    const c = new Map(commRows.map((r) => [r._id, r]));
+    const byDay = new Map(rows.map((r) => [r._id, r]));
     const list = keys.map((date) => {
-      const trips = o.get(date)?.trips || 0;
-      const grossMinor = o.get(date)?.grossMinor || 0;
-      const commissionMinor = c.get(date)?.commissionMinor || 0;
-      return { date, trips, grossMinor, commissionMinor, netMinor: grossMinor - commissionMinor };
+      const r = byDay.get(date);
+      const grossMinor = r?.grossMinor || 0;
+      const commissionMinor = r?.commissionMinor || 0;
+      return {
+        date,
+        trips: r?.trips || 0,
+        grossMinor,
+        commissionMinor,
+        netMinor: grossMinor - commissionMinor,
+        distanceMeters: r?.distanceMeters || 0,
+      };
     });
     ok(res, { timezone: STATS_TZ, today: list[0], days: list });
   } catch (e) { next(e); }

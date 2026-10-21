@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { Order, OrderStatusHistory, Driver, Customer, Rating } = require('../models');
+const { Order, OrderStatusHistory, Driver, Customer, Rating, TripEarning } = require('../models');
 const { OrderStatus, assertTransition, isActive } = require('../utils/orderStatus');
 const { haversineMeters, point } = require('../utils/geo');
 const { AppError } = require('../utils/errors');
@@ -66,6 +66,38 @@ function announceQueuedActivated(driverId, queued) {
     orderId: queued._id,
     status: OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
   });
+}
+
+/**
+ * Səfərin qazanc qeydini (TripEarning) yazır. Sifariş sonradan bazadan silinsə də sürücünün
+ * gündəlik qazancı, sifariş sayı və tutulan komissiya itmir. orderId unikal olduğu üçün təkrar yazılmır.
+ */
+async function recordEarning(order, driverId, commission, session) {
+  const gross = (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0;
+  const commissionMinor = commission && commission.commissionMinor ? commission.commissionMinor : 0;
+  const stops = order.stops || [];
+  const last = stops[stops.length - 1] || {};
+  await TripEarning.updateOne(
+    { orderId: order._id },
+    {
+      $setOnInsert: {
+        driverId,
+        orderId: order._id,
+        completedAt: order.completedAt || new Date(),
+        grossMinor: gross,
+        commissionMinor,
+        netMinor: gross - commissionMinor,
+        commissionRate: commission && commission.rate != null ? commission.rate : null,
+        ratingAtTrip: commission && commission.ratingAvg != null ? commission.ratingAvg : null,
+        distanceMeters: order.distanceMeters || 0,
+        durationMin: order.durationMin || 0,
+        paymentMethod: order.paymentMethod || 'CASH',
+        pickupAddress: order.pickupAddress || order.pickupLabel || '',
+        destinationAddress: last.address || last.label || '',
+      },
+    },
+    { upsert: true, session }
+  );
 }
 
 /** "Başqası üçün sifariş": ad və nömrə sürücüyə göstərilir. Yanlış/natamam məlumat atılır. */
@@ -393,11 +425,13 @@ async function completeTrip({ orderId, driver, user }) {
     order.status = OrderStatus.TRIP_COMPLETED;
     order.completedAt = new Date();
     order.version += 1;
+    let commission = { commissionMinor: 0, rate: null, ratingAvg: null };
     if (!order.commissionApplied) {
-      await walletService.applyTripCommission(driver._id, order, session);
+      commission = await walletService.applyTripCommission(driver._id, order, session);
       order.commissionApplied = true;
     }
     await order.save({ session });
+    await recordEarning(order, driver._id, commission, session);
     await recordHistory(order._id, OrderStatus.TRIP_STARTED, OrderStatus.TRIP_COMPLETED, 'DRIVER', user._id, null, session);
 
     assertTransition(order.status, OrderStatus.RATING_PENDING);

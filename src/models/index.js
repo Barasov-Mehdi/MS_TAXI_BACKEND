@@ -18,4 +18,5 @@ module.exports = {
   OtpCode: require('./OtpCode'),
   Notification: require('./Notification'),
   AuditLog: require('./AuditLog'),
+  TripEarning: require('./TripEarning'),
 };

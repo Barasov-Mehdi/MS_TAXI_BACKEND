@@ -10,10 +10,13 @@ const DEFAULTS = {
   // Sifariş üçün sürücünün koordinatı (GPS ölçməsi) bu qədər saniyədən köhnə olmamalıdır
   driverFixMaxAgeSeconds: 60,
 
+  // Komissiya: sifariş qiymətinin faizi. Reytinq ratingThreshold-dan aşağıdırsa (lowRatingInclusive=true olduqda
+  // bərabər də daxil) lowRatingCommission, əks halda tripCommission tutulur.
   tripCommissionType: 'PERCENTAGE',
-  tripCommission: 13,
+  tripCommission: 10,
   lowRatingCommission: 15,
   ratingThreshold: 3,
+  lowRatingInclusive: true,
 
   minimumDriverBalance: 0,
   negativeBalanceAllowed: false,
@@ -62,6 +65,28 @@ async function seedDefaults() {
   }
   // Köhnə default (25 san) bazada qalıbsa, 20 saniyəyə keçir. Admin əl ilə başqa dəyər qoyubsa toxunulmur.
   await SystemSetting.updateOne({ key: 'driverOfferSeconds', value: 25 }, { $set: { value: 20 } });
+
+  // Bir dəfəlik miqrasiya: yeni komissiya siyasəti (reytinq ≤ 3 → 15%, > 3 → 10%).
+  // Bayraq qoyulur ki, sonradan admin dəyərləri dəyişsə, restartda təkrar yazılmasın.
+  const flag = await SystemSetting.findOne({ key: 'migration_commission_v2' }).lean();
+  if (!flag) {
+    const policy = {
+      tripCommissionType: 'PERCENTAGE',
+      tripCommission: 10,
+      lowRatingCommission: 15,
+      ratingThreshold: 3,
+      lowRatingInclusive: true,
+    };
+    for (const [key, value] of Object.entries(policy)) {
+      await SystemSetting.updateOne({ key }, { $set: { key, value } }, { upsert: true });
+    }
+    await SystemSetting.updateOne(
+      { key: 'migration_commission_v2' },
+      { $set: { key: 'migration_commission_v2', value: new Date().toISOString() } },
+      { upsert: true }
+    );
+    console.log('[settings] komissiya siyasəti yeniləndi: reytinq ≤ 3 → 15%, > 3 → 10%');
+  }
   invalidateSettingsCache();
 }
 

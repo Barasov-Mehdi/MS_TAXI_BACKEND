@@ -72,6 +72,8 @@ async function start() {
   io = attachWebsocket(server);
   await mongoose.connect(config.mongoUri, { serverSelectionTimeoutMS: 10_000 });
   await seedDefaults();
+  // Qazanc jurnalı köhnə sifarişlərdən bir dəfə doldurulur (xəta serverin qalxmasına mane olmasın)
+  await require('./services/earnings.service').backfillOnce().catch((e) => console.error('[earnings] backfill failed', e));
   await new Promise((resolve) => server.listen(config.port, resolve));
   console.log(`taxi-backend listening on :${config.port}`);
   startDispatchLoop();
