@@ -30,6 +30,7 @@ const ALLOWED_TRANSITIONS = {
     OrderStatus.EXPIRED,
   ],
   [OrderStatus.DRIVER_ASSIGNED]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.DRIVER_ON_THE_WAY,
     // Köhnə (admin təyin etdiyi) sifarişlər bu vəziyyətdə ilişib qalmasın: sürücü birbaşa "çatdım" deyə bilər
     OrderStatus.DRIVER_ARRIVED,
@@ -38,12 +39,14 @@ const ALLOWED_TRANSITIONS = {
     OrderStatus.ADMIN_CANCELLED,
   ],
   [OrderStatus.DRIVER_ON_THE_WAY]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.DRIVER_ARRIVED,
     OrderStatus.DRIVER_CANCELLED,
     OrderStatus.CUSTOMER_CANCELLED,
     OrderStatus.ADMIN_CANCELLED,
   ],
   [OrderStatus.DRIVER_ARRIVED]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.TRIP_STARTED,
     OrderStatus.DRIVER_CANCELLED,
     OrderStatus.CUSTOMER_CANCELLED,
@@ -65,18 +68,21 @@ const ALLOWED_TRANSITIONS = {
   [OrderStatus.DISPUTED]: [OrderStatus.WAITING_FOR_ADMIN, OrderStatus.COMPLETED, OrderStatus.ADMIN_CANCELLED],
   [OrderStatus.WAITING_FOR_ADMIN]: [OrderStatus.COMPLETED, OrderStatus.ADMIN_CANCELLED],
   [OrderStatus.QUEUED]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
     OrderStatus.CUSTOMER_CANCELLED,
     OrderStatus.ADMIN_CANCELLED,
     OrderStatus.DRIVER_CANCELLED,
   ],
   [OrderStatus.DRIVER_FINISHING_CURRENT_TRIP]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
     OrderStatus.CUSTOMER_CANCELLED,
     OrderStatus.ADMIN_CANCELLED,
     OrderStatus.DRIVER_CANCELLED,
   ],
   [OrderStatus.DRIVER_HEADING_TO_CUSTOMER]: [
+    OrderStatus.SEARCHING_DRIVER, // sürücü ləğv etdi → növbəti sürücüyə ötürülür
     OrderStatus.DRIVER_ON_THE_WAY,
     OrderStatus.DRIVER_ARRIVED,
     OrderStatus.DRIVER_CANCELLED,

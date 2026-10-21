@@ -468,7 +468,93 @@ async function completeTrip({ orderId, driver, user }) {
   }
 }
 
+/** Sürücü bu vəziyyətlərdə ləğv edərsə sifariş bağlanmır, növbəti sürücüyə ötürülür (sərnişin hələ maşında deyil). */
+const REDISPATCHABLE = new Set([
+  OrderStatus.DRIVER_ASSIGNED,
+  OrderStatus.DRIVER_ON_THE_WAY,
+  OrderStatus.DRIVER_HEADING_TO_CUSTOMER,
+  OrderStatus.DRIVER_ARRIVED,
+  OrderStatus.QUEUED,
+  OrderStatus.DRIVER_FINISHING_CURRENT_TRIP,
+]);
+
+/**
+ * Sürücü qəbul etdiyi sifarişi ləğv etdi: sərnişin yenidən sifariş yaratmasın deyə sifariş
+ * SEARCHING_DRIVER vəziyyətinə qaytarılır və dərhal növbəti ən yaxın sürücüyə təklif olunur.
+ * Ləğv edən sürücü bu sifarişə bir daha təklif almır (rejectedDriverIds). Axtarış müddəti yenidən başlayır.
+ */
+async function redispatchAfterDriverCancel({ order, user, reason }) {
+  const settings = await getSettings();
+  const { timeoutSeconds } = dispatchService.dispatchConfig(settings);
+  const driverId = order.driverId;
+  const from = order.status;
+  const now = new Date();
+  const session = await mongoose.startSession();
+  let activated = null;
+  let updated = null;
+  try {
+    await session.withTransaction(async () => {
+      updated = await Order.findOneAndUpdate(
+        { _id: order._id, status: from, driverId },
+        {
+          $set: {
+            status: OrderStatus.SEARCHING_DRIVER,
+            driverId: null,
+            acceptedAt: null,
+            currentOfferDriverId: null,
+            offerExpiresAt: null,
+            searchDeadlineAt: new Date(now.getTime() + timeoutSeconds * 1000),
+            dispatchDueAt: now,
+          },
+          $addToSet: { rejectedDriverIds: driverId, offeredToDriverIds: driverId },
+          $inc: { version: 1, dispatchSeq: 1, redispatchCount: 1 },
+        },
+        { new: true, session }
+      );
+      if (!updated) throw new AppError('ORDER_STATE_CHANGED', 'Order state changed, please refresh', 409);
+
+      await recordHistory(order._id, from, OrderStatus.SEARCHING_DRIVER, 'DRIVER', user._id, `driver_cancel: ${reason || ''}`.trim(), session);
+      await Driver.updateOne({ _id: driverId }, { $pull: { queuedOrderIds: order._id } }, { session });
+      await Driver.updateOne({ _id: driverId, currentOrderId: order._id }, { $set: { currentOrderId: null } }, { session });
+      activated = await activateNextQueued(driverId, session);
+    });
+  } finally {
+    session.endSession();
+  }
+
+  announceQueuedActivated(driverId, activated);
+  // Sürücüyə socket hadisəsi göndərilmir: ləğvi özü edib (REST cavabı kifayətdir), əks halda tətbiq
+  // "Sifariş ləğv olundu" xəbərdarlığını ləğv edən sürücünün özünə göstərərdi.
+  // Sərnişinə: sifariş ləğv olunmayıb, yeni sürücü axtarılır
+  const payload = {
+    orderId: order._id,
+    status: OrderStatus.SEARCHING_DRIVER,
+    reason: 'DRIVER_CANCELLED',
+    message: 'Sürücü sifarişi ləğv etdi. Sizə yeni sürücü axtarılır.',
+  };
+  realtime.toCustomer(order.customerId, 'driver_cancelled_searching', payload);
+  realtime.toCustomer(order.customerId, 'order_status_changed', payload);
+  realtime.toOrder(order._id, 'order_status_changed', payload);
+
+  try {
+    await dispatchService.startDispatch(order._id);
+  } catch (e) {
+    console.error('redispatch failed for order', String(order._id), e); // worker növbəti tick-də təkrar cəhd edəcək
+  }
+  return (await Order.findById(order._id)) || updated;
+}
+
 async function cancelOrder({ order, user, role, reason }) {
+  // Sürücü qəbul etdiyi (hələ başlamamış) sifarişi ləğv edir → növbəti sürücüyə ötürülür
+  if (role === 'DRIVER' && REDISPATCHABLE.has(order.status) && order.driverId) {
+    const settings = await getSettings();
+    const max = Number(settings.maxRedispatch ?? 5);
+    if ((order.redispatchCount || 0) < max) {
+      return redispatchAfterDriverCancel({ order, user, reason });
+    }
+    // Həddən çox ötürülüb: sifariş həqiqətən ləğv olunur (aşağıdakı adi axın)
+  }
+
   const map = {
     CUSTOMER: OrderStatus.CUSTOMER_CANCELLED,
     DRIVER: OrderStatus.DRIVER_CANCELLED,

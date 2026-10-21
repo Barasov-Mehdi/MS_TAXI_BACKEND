@@ -34,6 +34,8 @@ const DEFAULTS = {
   // Uyğun sürücü tapılmadıqda təkrar axtarış intervalı (san)
   dispatchRetrySeconds: 3,
   cancellationFeeMinor: 0,
+  // Sürücü qəbul etdiyi sifarişi ləğv edəndə sifariş bu qədər dəfəyə qədər yenidən axtarışa qaytarılır
+  maxRedispatch: 5,
 };
 
 let cache = null;

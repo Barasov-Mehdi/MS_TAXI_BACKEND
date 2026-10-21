@@ -68,6 +68,8 @@ const orderSchema = new mongoose.Schema(
     idempotencyKey: { type: String, default: null },
     commissionApplied: { type: Boolean, default: false },
     ratingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Rating', default: null },
+    // Sürücü qəbul edib sonra ləğv edəndə sifariş növbəti sürücüyə ötürülür: neçə dəfə ötürüldüyü
+    redispatchCount: { type: Number, default: 0 },
     // Yumşaq silmə: admin "sil" edəndə sənəd bazada qalır (sürücü statistikası/hesabatlar pozulmur)
     deletedAt: { type: Date, default: null },
   },
