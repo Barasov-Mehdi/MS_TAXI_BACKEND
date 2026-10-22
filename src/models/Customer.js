@@ -9,6 +9,9 @@ const customerSchema = new mongoose.Schema(
     },
     locationUpdatedAt: { type: Date, default: null },
     defaultPaymentMethod: { type: String, enum: ['CASH', 'CARD', 'WALLET'], default: 'CASH' },
+    // FCM cihaz tokeni: tətbiq bağlı olanda sifariş bildirişləri (select:false - API cavablarına düşmür)
+    fcmToken: { type: String, default: null, select: false },
+    fcmTokenUpdatedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

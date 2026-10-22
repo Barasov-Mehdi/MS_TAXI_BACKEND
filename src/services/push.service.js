@@ -17,7 +17,7 @@
  *     `taxidriver://n/...` linki ilə uyğun ekrana yönləndirilir. Tətbiq ÖN PLANDA olanda sistem bildiriş göstərmir
  *     (socket hadisəsi + tətbiqdaxili banner işləyir) - təkrar bildiriş olmur.
  */
-const { Driver } = require('../models');
+const { Driver, Customer } = require('../models');
 
 let messaging = null;
 let initTried = false;
@@ -154,6 +154,45 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
     return true;
   } catch (e) {
     await handleSendError(driverId, driver.fcmToken, e);
+    return false;
+  }
+}
+
+/**
+ * Sərnişin tətbiqinə bildiriş (MS Taxi). Kanallar müştəri tətbiqində (MainApplication.kt) yaradılır:
+ * trip_updates, chat_messages. Toxunanda tətbiq açılır (data.type / orderId ilə).
+ */
+async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000 }) {
+  const m = init();
+  if (!m || !customerId) return false;
+  const customer = await Customer.findById(customerId).select('+fcmToken').lean();
+  if (!customer || !customer.fcmToken) return false;
+  const payload = { type: str(type) };
+  for (const [k, v] of Object.entries(data)) payload[k] = str(v);
+  try {
+    await m.send({
+      token: customer.fcmToken,
+      notification: { title: clip(title, 80), body: clip(body, 180) },
+      data: payload,
+      android: {
+        priority: 'high',
+        ttl: Math.max(1000, ttlMs),
+        notification: {
+          channelId: CHANNEL[channel] || CHANNEL.trip,
+          sound: 'default',
+          defaultVibrateTimings: true,
+          ...(tag ? { tag: String(tag).slice(0, 100) } : {}),
+        },
+      },
+    });
+    return true;
+  } catch (e) {
+    const code = e && e.code ? String(e.code) : '';
+    if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token') || code.includes('invalid-argument')) {
+      await Customer.updateOne({ _id: customerId, fcmToken: customer.fcmToken }, { $set: { fcmToken: null } }).catch(() => {});
+    } else {
+      console.error('[push] müştəriyə göndərilmədi:', code || (e && e.message));
+    }
     return false;
   }
 }
@@ -336,6 +375,7 @@ module.exports = {
   notifyOrderRemoved,
   notifyBalanceChange,
   notifyAccount,
+  sendToCustomer,
   CHANNEL,
   CLICK_ACTION,
 };

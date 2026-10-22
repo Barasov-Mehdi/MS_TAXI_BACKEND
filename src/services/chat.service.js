@@ -79,6 +79,15 @@ async function sendMessage({ orderId, senderUser, message, clientMessageId }) {
     createdAt: row.createdAt,
   });
 
+  // Alıcı sərnişindirsə: müştəri tətbiqinə push (tətbiq bağlı olanda)
+  if (receiverId === customerUserId) {
+    require('./customerNotify').chatMessage(order.customerId, {
+      orderId: String(order._id),
+      senderName: [senderUser.firstName].filter(Boolean).join(' ') || 'Sürücü',
+      text,
+    });
+  }
+
   // Alıcı sürücüdürsə: tətbiq arxa planda / bağlı olanda telefona bildiriş (FCM). Xəta mesajın göndərilməsinə təsir etmir.
   if (order.driverId && receiverId === driverUserId) {
     pushService

@@ -11,6 +11,20 @@ const chatService = require('../services/chat.service');
 const { Order, Complaint, OrderIssue, User, Driver, Rating } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const adminFeed = require('../websocket/adminFeed');
+const Joi = require('joi');
+const promoService = require('../services/promo.service');
+const cityService = require('../services/city.service');
+
+function validated(schema) {
+  return (req, res, next) => {
+    const { error, value } = schema.validate(req.body, { stripUnknown: true });
+    if (error) return next(new AppError('VALIDATION_ERROR', error.details[0].message, 400));
+    req.body = value;
+    next();
+  };
+}
+
+const COMPLAINT_CATEGORIES = ['DRIVER_BEHAVIOR', 'VEHICLE_PROBLEM', 'PAYMENT', 'WRONG_ROUTE', 'SAFETY', 'OTHER'];
 
 router.use(authenticate, requireRoles('CUSTOMER'));
 
@@ -128,7 +142,29 @@ router.post('/orders/quote', async (req, res, next) => {
         surgeMultiplier: q.surgeMultiplier,
       };
     }
-    ok(res, { quotes, ...metrics, currency: 'AZN' });
+
+    // Promo kod: hər sinif üçün endirimli qiymət (sifariş yaradılanda eyni qayda tətbiq olunur)
+    let promo = null;
+    const code = req.body.promoCode ? String(req.body.promoCode).trim().toUpperCase() : '';
+    if (code) {
+      promo = { code, valid: false, error: null };
+      for (const t of Object.keys(quotes)) {
+        try {
+          const r = await promoService.validateAndQuote(code, req.customer._id, quotes[t].priceMinor, req.user._id);
+          const discount = Math.min(r.discountMinor || 0, quotes[t].priceMinor);
+          quotes[t].originalPriceMinor = quotes[t].priceMinor;
+          quotes[t].discountMinor = discount;
+          quotes[t].priceMinor -= discount;
+          quotes[t].price = quotes[t].priceMinor / 100;
+          promo.valid = true;
+        } catch (e) {
+          // Bir sinif üçün uyğun olmaya bilər (məs. minimum məbləğ) - digərləri üçün işləyə bilər
+          if (!promo.error) promo.error = { code: e.code || 'PROMO_INVALID', message: e.message };
+        }
+      }
+      if (promo.valid) promo.error = null;
+    }
+    ok(res, { quotes, promo, ...metrics, currency: 'AZN' });
   } catch (e) { next(e); }
 });
 
@@ -194,11 +230,20 @@ router.get('/orders', async (req, res, next) => {
     });
     const ratings = await Rating.find({ orderId: { $in: rows.map((o) => o._id) } }).select('orderId score');
     const scoreByOrder = new Map(ratings.map((r) => [String(r.orderId), r.score]));
+    const complaints = await Complaint.find({ orderId: { $in: rows.map((o) => o._id) } })
+      .sort({ createdAt: -1 })
+      .select('orderId status category createdAt')
+      .lean();
+    const complaintByOrder = new Map();
+    complaints.forEach((c) => {
+      if (!complaintByOrder.has(String(c.orderId))) complaintByOrder.set(String(c.orderId), { status: c.status, category: c.category, createdAt: c.createdAt });
+    });
 
     const orders = rows.map((o) => ({
       ...o.toObject(),
       driver: o.driverId ? driverById.get(String(o.driverId)) || null : null,
       myRating: scoreByOrder.get(String(o._id)) || null,
+      complaint: complaintByOrder.get(String(o._id)) || null,
     }));
     ok(res, { orders });
   } catch (e) { next(e); }
@@ -277,10 +322,23 @@ router.post('/orders/:id/rating', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/orders/:id/complaints', async (req, res, next) => {
+router.post(
+  '/orders/:id/complaints',
+  validated(Joi.object({
+    category: Joi.string().valid(...COMPLAINT_CATEGORIES).required().messages({ 'any.only': 'Mövzunu seçin', 'any.required': 'Mövzunu seçin' }),
+    description: Joi.string().trim().min(5).max(1000).required().messages({
+      'string.empty': 'Nə baş verdiyini yazın',
+      'string.min': 'Bir az ətraflı yazın (ən azı 5 simvol)',
+      'any.required': 'Nə baş verdiyini yazın',
+    }),
+    attachments: Joi.array().items(Joi.string().max(500)).max(5),
+  })),
+  async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
-    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Sifariş tapılmadı', 404);
+    const open = await Complaint.findOne({ orderId: order._id, status: { $nin: ['RESOLVED', 'REJECTED'] } });
+    if (open) throw new AppError('COMPLAINT_EXISTS', 'Bu səfər üzrə şikayətiniz artıq baxılır', 409);
     const c = await Complaint.create({
       orderId: order._id,
       customerId: req.customer._id,
@@ -291,6 +349,40 @@ router.post('/orders/:id/complaints', async (req, res, next) => {
     });
     adminFeed.feedback({ order, complaint: { _id: c._id, category: c.category } });
     ok(res, { complaint: c }, {}, 201);
+  } catch (e) { next(e); }
+  }
+);
+
+// FCM cihaz tokeni: tətbiq açılanda / token yenilənəndə göndərilir (push bildirişləri üçün)
+router.post(
+  '/fcm-token',
+  validated(Joi.object({ token: Joi.string().trim().min(20).max(4096).required() })),
+  async (req, res, next) => {
+    try {
+      const { Customer } = require('../models');
+      // Eyni cihaz başqa hesabla açılıbsa köhnə hesabdan token götürülür (bildiriş səhv adama getməsin)
+      await Customer.updateMany({ fcmToken: req.body.token, _id: { $ne: req.customer._id } }, { $set: { fcmToken: null } });
+      await Customer.updateOne({ _id: req.customer._id }, { $set: { fcmToken: req.body.token, fcmTokenUpdatedAt: new Date() } });
+      ok(res, { saved: true });
+    } catch (e) { next(e); }
+  }
+);
+
+router.delete('/fcm-token', async (req, res, next) => {
+  try {
+    const { Customer } = require('../models');
+    await Customer.updateOne({ _id: req.customer._id }, { $set: { fcmToken: null } });
+    ok(res, { removed: true });
+  } catch (e) { next(e); }
+});
+
+// Müştəri üçün ofis (dəstək) məlumatı: mövqeyə ən yaxın şəhərin ofisi + bütün ofislər
+router.get('/office', async (req, res, next) => {
+  try {
+    const all = await cityService.listActive();
+    const near = await cityService.cityForPoint(req.query.lat, req.query.lng);
+    const nearest = near ? all.find((c) => String(c._id) === String(near.id)) || null : null;
+    ok(res, { nearest, cities: all.filter((c) => c.officePhone) });
   } catch (e) { next(e); }
 });
 

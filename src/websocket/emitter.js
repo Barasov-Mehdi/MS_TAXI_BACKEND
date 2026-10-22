@@ -22,11 +22,14 @@ function emitToParties(order, event, payload) {
 const ORDER_EVENTS = new Set(['order_status_changed', 'order_cancelled', 'trip_completed', 'order_expired', 'driver_assigned']);
 const DRIVER_EVENTS = { balance_updated: 'balance', driver_offline: 'offline', documents_updated: 'documents', queued_order_activated: 'order', account_status: 'account' };
 const feed = () => require('./adminFeed');
+// Sərnişinə push (tətbiq bağlı olanda): bu hadisələr customerNotify-a ötürülür
+const CUSTOMER_PUSH_EVENTS = new Set(['order_status_changed', 'trip_completed', 'order_cancelled', 'trip_stopped']);
 
 module.exports = {
   setIo,
   toCustomer: (id, event, payload) => {
     emit(`customer:${id}`, event, payload);
+    if (ioRef && CUSTOMER_PUSH_EVENTS.has(event)) require('../services/customerNotify').onCustomerEvent(id, event, payload);
     if (ORDER_EVENTS.has(event) && payload && payload.orderId) feed().orderChanged(payload.orderId);
   },
   toDriver: (id, event, payload) => {
@@ -47,4 +50,8 @@ module.exports = {
     t.emit(event, payload);
   },
   toParties: emitToParties,
+  // Otaqdakı bütün bağlantıları qırır (məs. bloklanmış istifadəçi)
+  disconnectRoom: (room) => {
+    if (ioRef) ioRef.in(room).disconnectSockets(true);
+  },
 };
