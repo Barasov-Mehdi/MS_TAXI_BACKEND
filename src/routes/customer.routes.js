@@ -10,6 +10,7 @@ const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
 const { Order, Complaint, OrderIssue, User, Driver, Rating } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
+const adminFeed = require('../websocket/adminFeed');
 
 router.use(authenticate, requireRoles('CUSTOMER'));
 
@@ -107,7 +108,8 @@ router.post('/orders/quote', async (req, res, next) => {
     const requested = Array.isArray(req.body.vehicleTypes) && req.body.vehicleTypes.length
       ? req.body.vehicleTypes
       : pricingService.VEHICLE_TYPES;
-    const types = requested.filter((t) => pricingService.VEHICLE_TYPES.includes(t));
+    // Cavab müştərinin istədiyi adla qaytarılır (köhnə tətbiq köhnə adla soruşsa da işləsin)
+    const types = requested.filter((t) => pricingService.VEHICLE_TYPES.includes(pricingService.normalizeVehicleType(t)));
     const metrics = pricingService.resolveTripMetrics({
       points: [pickup, ...stops],
       distanceMeters: req.body.distanceMeters,
@@ -118,7 +120,7 @@ router.post('/orders/quote', async (req, res, next) => {
       const q = await pricingService.calculateTripPrice({
         ...metrics,
         stopCount: stops.length - 1,
-        vehicleType,
+        vehicleType: pricingService.normalizeVehicleType(vehicleType),
       });
       quotes[vehicleType] = {
         priceMinor: q.finalPriceMinor,
@@ -287,6 +289,7 @@ router.post('/orders/:id/complaints', async (req, res, next) => {
       description: req.body.description,
       attachments: req.body.attachments || [],
     });
+    adminFeed.feedback({ order, complaint: { _id: c._id, category: c.category } });
     ok(res, { complaint: c }, {}, 201);
   } catch (e) { next(e); }
 });
@@ -302,6 +305,7 @@ router.post('/orders/:id/issues', async (req, res, next) => {
       type: req.body.type,
       description: req.body.description,
     });
+    adminFeed.issue(issue);
     ok(res, { issue }, {}, 201);
   } catch (e) { next(e); }
 });

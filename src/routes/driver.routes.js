@@ -15,6 +15,7 @@ const cityService = require('../services/city.service');
 const supportService = require('../services/support.service');
 const documentService = require('../services/document.service');
 const realtime = require('../websocket/emitter');
+const adminFeed = require('../websocket/adminFeed');
 const multer = require('multer');
 
 // Sənəd şəkli yaddaşda saxlanır (diskə yazılmır), sonra GridFS-ə ötürülür
@@ -241,6 +242,7 @@ router.post('/online', async (req, res, next) => {
     req.driver.isOnline = true;
     req.driver.onlineSince = new Date();
     await req.driver.save();
+    adminFeed.driverChanged(req.driver._id, 'online');
     ok(res, { driver: req.driver });
   } catch (e) { next(e); }
 });
@@ -258,6 +260,7 @@ router.post('/offline', async (req, res, next) => {
     await req.driver.save();
     // Üzərində gözləyən təklif varsa, 20 san gözləmədən növbəti sürücüyə keçir.
     await dispatchService.advanceOffersOfDriver(req.driver._id, 'DRIVER_OFFLINE');
+    adminFeed.driverChanged(req.driver._id, 'offline');
     ok(res, { driver: req.driver });
   } catch (e) { next(e); }
 });
@@ -642,6 +645,7 @@ router.post('/orders/:id/issues', async (req, res, next) => {
       type: req.body.type,
       description: req.body.description,
     });
+    adminFeed.issue(issue);
     ok(res, { issue }, {}, 201);
   } catch (e) { next(e); }
 });

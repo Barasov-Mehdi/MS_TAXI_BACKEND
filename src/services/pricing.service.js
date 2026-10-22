@@ -1,7 +1,38 @@
 const { PricingRule } = require('../models');
 const { haversineMeters } = require('../utils/geo');
 
-const VEHICLE_TYPES = ['basic', 'city', 'bolt'];
+const VEHICLE_TYPES = ['basic', 'city', 'premium'];
+// Köhnə adlar (əvvəlki versiyalardan qalan sifariş/tarif və köhnə müştəri tətbiqləri üçün)
+const LEGACY_VEHICLE_TYPES = { bolt: 'premium' };
+
+/** Gələn sinif adını cari ada çevirir (məs. köhnə ad -> 'premium'). Naməlum dəyər olduğu kimi qalır. */
+function normalizeVehicleType(t) {
+  const v = String(t || 'basic').trim().toLowerCase();
+  return LEGACY_VEHICLE_TYPES[v] || v;
+}
+
+/**
+ * Bir dəfəlik köçürmə (server açılanda, təkrar çağırmaq zərərsizdir):
+ * DB-də köhnə sinif adı ilə qalmış tarif və sifarişləri yeni ada keçirir.
+ */
+async function migrateLegacyVehicleTypes() {
+  const { Order } = require('../models');
+  let changed = 0;
+  for (const [oldName, newName] of Object.entries(LEGACY_VEHICLE_TYPES)) {
+    const rules = await PricingRule.find({ vehicleType: oldName });
+    for (const r of rules) {
+      r.vehicleType = newName;
+      if (r.name === `default-${oldName}`) r.name = `default-${newName}`;
+      await r.save();
+      changed += 1;
+    }
+    const a = await Order.updateMany({ vehicleType: oldName }, { $set: { vehicleType: newName } });
+    const b = await Order.updateMany({ 'pricingSnapshot.vehicleType': oldName }, { $set: { 'pricingSnapshot.vehicleType': newName } });
+    changed += (a.modifiedCount || 0) + (b.modifiedCount || 0);
+  }
+  if (changed) console.log(`[pricing] köhnə sinif adları yeniləndi: ${changed} qeyd`);
+  return changed;
+}
 const DEFAULT_SPEED_KMH = 30;
 
 /**
@@ -121,4 +152,6 @@ module.exports = {
   priceFromBands,
   resolveTripMetrics,
   VEHICLE_TYPES,
+  normalizeVehicleType,
+  migrateLegacyVehicleTypes,
 };

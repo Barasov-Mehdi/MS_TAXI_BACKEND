@@ -73,6 +73,7 @@ async function start() {
   await mongoose.connect(config.mongoUri, { serverSelectionTimeoutMS: 10_000 });
   await seedDefaults();
   await require('./services/city.service').seedCities().catch((e) => console.error('[city] seed failed', e));
+  await require('./services/pricing.service').migrateLegacyVehicleTypes().catch((e) => console.error('[pricing] migrate failed', e));
   // Qazanc jurnalı köhnə sifarişlərdən bir dəfə doldurulur (xəta serverin qalxmasına mane olmasın)
   await require('./services/earnings.service').backfillOnce().catch((e) => console.error('[earnings] backfill failed', e));
   await new Promise((resolve) => server.listen(config.port, resolve));

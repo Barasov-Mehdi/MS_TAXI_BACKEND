@@ -11,6 +11,7 @@ const walletService = require('./wallet.service');
 const { getSettings } = require('./settings.service');
 const { normalizePhone } = require('../utils/validators');
 const realtime = require('../websocket/emitter');
+const adminFeed = require('../websocket/adminFeed');
 const pushService = require('./push.service');
 
 /** Push xətası əsas axını pozmasın. */
@@ -158,6 +159,7 @@ async function createOrder({
     throw new AppError('PAYMENT_METHOD_UNSUPPORTED', 'Hazırda yalnız nağd ödəniş mövcuddur', 400);
   }
 
+  vehicleType = pricingService.normalizeVehicleType(vehicleType);
   if (!pricingService.VEHICLE_TYPES.includes(vehicleType)) {
     throw new AppError('INVALID_VEHICLE_TYPE', 'Unknown vehicle type', 400);
   }
@@ -239,6 +241,7 @@ async function createOrder({
   } catch (e) {
     console.error('initial dispatch failed for order', String(order._id), e);
   }
+  adminFeed.orderChanged(order._id);
   return (await Order.findById(order._id)) || order;
 }
 
@@ -672,7 +675,11 @@ async function stopTrip({ orderId, driver, user, reason, latitude, longitude, do
       `alınan: ${(chargedMinor / 100).toFixed(2)} AZN (ilkin: ${(original / 100).toFixed(2)} AZN). ` +
       `Sürücünün bu gün dayandırdığı səfər sayı: ${stopsToday}.` +
       (newOrder ? ` Sərnişin üçün yeni sifariş: ${newOrder._id}` : ''),
-  }).catch((e) => console.error('[stopTrip] issue create failed', e && e.message));
+  })
+    .then((doc) => adminFeed.issue(doc))
+    .catch((e) => console.error('[stopTrip] issue create failed', e && e.message));
+  adminFeed.orderChanged(order._id);
+  adminFeed.driverChanged(driver._id, 'order');
   realtime.toAdminCity(driver.cityId, 'trip_stopped', {
     orderId: order._id,
     driverId: driver._id,
@@ -848,6 +855,7 @@ async function rateOrder({ order, customer, score, comment }) {
     order.ratingId = rating._id;
     await order.save({ session });
     await session.commitTransaction();
+    adminFeed.feedback({ order, score, comment });
     return rating;
   } catch (e) {
     if (e.code === 11000) {

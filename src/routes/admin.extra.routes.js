@@ -17,6 +17,7 @@ const documentService = require('../services/document.service');
 const pushService = require('../services/push.service');
 const cityService = require('../services/city.service');
 const realtime = require('../websocket/emitter');
+const adminFeed = require('../websocket/adminFeed');
 const {
   Order, Driver, Customer, User, Vehicle, Rating, Complaint, TripEarning, AuditLog, DriverDocument, City, RefreshToken,
 } = require('../models');
@@ -455,6 +456,7 @@ router.patch(
       user.lastName = req.body.lastName;
       await user.save();
       await audit(req, 'DRIVER_PROFILE_EDIT', 'Driver', driver._id, old, { firstName: user.firstName, lastName: user.lastName }, req.body.reason);
+      adminFeed.driverChanged(driver._id, 'profile');
       ok(res, { saved: true });
     } catch (e) { next(e); }
   }

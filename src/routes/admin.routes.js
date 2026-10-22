@@ -19,6 +19,7 @@ const { normalizePhone } = require('../utils/validators');
 const views = require('../services/adminViews.service');
 const { softDeleteDriver } = require('../services/driverAdmin.service');
 const realtime = require('../websocket/emitter');
+const adminFeed = require('../websocket/adminFeed');
 const {
   Order, Driver, Customer, User, Complaint, OrderIssue, City, Rating, Vehicle, TripEarning,
   OrderStatusHistory, Message, DriverDeleteRequest, SupportThread, DriverDocument,
@@ -410,6 +411,7 @@ router.patch('/drivers/:id', async (req, res, next) => {
       await dispatchService.advanceOffersOfDriver(driver._id, 'DRIVER_OFFLINE').catch(() => {});
     }
     await audit(req, 'DRIVER_UPDATE', 'Driver', driver._id, old, driver.toObject(), req.body.reason);
+    adminFeed.driverChanged(driver._id, old.isActive !== driver.isActive ? (driver.isActive ? 'unblocked' : 'blocked') : old.isVerified !== driver.isVerified ? (driver.isVerified ? 'verified' : 'unverified') : 'updated');
     // Hesab statusu dəyişibsə sürücüyə bildiriş (təsdiq / deaktiv)
     if (old.isVerified !== driver.isVerified) {
       pushService.notifyAccount(driver._id, driver.isVerified ? 'verified' : 'unverified').catch(() => {});
@@ -972,9 +974,24 @@ router.get('/pricing-rules', requireSuperAdmin, async (req, res) => {
   ok(res, { rules: await PricingRule.find() });
 });
 
+// Tarifin sinfi yalnız tanınan siniflərdən biri ola bilər
+function pricingBody(body) {
+  const pricingService = require('../services/pricing.service');
+  const b = { ...body };
+  delete b._id;
+  delete b.version;
+  if (b.vehicleType !== undefined) {
+    b.vehicleType = pricingService.normalizeVehicleType(b.vehicleType);
+    if (!pricingService.VEHICLE_TYPES.includes(b.vehicleType)) {
+      throw new AppError('INVALID_VEHICLE_TYPE', 'Avtomobil sinfi düzgün deyil', 400);
+    }
+  }
+  return b;
+}
+
 router.post('/pricing-rules', requireSuperAdmin, async (req, res, next) => {
   try {
-    const rule = await PricingRule.create(req.body);
+    const rule = await PricingRule.create(pricingBody(req.body));
     await audit(req, 'PRICING_CREATE', 'PricingRule', rule._id, null, rule.toObject());
     ok(res, { rule }, {}, 201);
   } catch (e) { next(e); }
@@ -984,7 +1001,7 @@ router.patch('/pricing-rules/:id', requireSuperAdmin, async (req, res, next) => 
   try {
     const rule = await PricingRule.findById(req.params.id);
     if (!rule) throw new AppError('NOT_FOUND', 'Pricing rule not found', 404);
-    Object.assign(rule, req.body);
+    Object.assign(rule, pricingBody(req.body));
     rule.version += 1;
     await rule.save();
     await audit(req, 'PRICING_UPDATE', 'PricingRule', rule._id, null, rule.toObject());

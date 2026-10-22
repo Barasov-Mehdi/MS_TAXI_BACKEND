@@ -3,6 +3,7 @@ const { Driver, Customer } = require('../models');
 const { getSettings } = require('./settings.service');
 const { point, haversineMeters } = require('../utils/geo');
 const realtime = require('../websocket/emitter');
+const adminFeed = require('../websocket/adminFeed');
 const { Order } = require('../models');
 const matchingService = require('./matching.service');
 
@@ -80,6 +81,7 @@ async function updateDriverLocation(driver, payload) {
   driver.locationMeta = { accuracy, heading, speed, timestamp: ts };
   driver.locationUpdatedAt = now;
   driver.locationFixAt = fixAt;
+  adminFeed.driverLocation(driver); // admin panelin canlı xəritəsi
 
   if (driver.currentOrderId) {
     const order = await Order.findById(driver.currentOrderId);

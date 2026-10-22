@@ -9,6 +9,7 @@ const { normalizePhone } = require('../utils/validators');
 async function run() {
   await mongoose.connect(config.mongoUri);
   await seedDefaults();
+  await require('../services/pricing.service').migrateLegacyVehicleTypes();
 
   // Hər nəqliyyat sinfi üçün tarif (qəpik ilə). Sonradan admin paneldən dəyişdirilə bilər.
   const baseBands = [
@@ -23,7 +24,7 @@ async function run() {
   const plans = [
     { vehicleType: 'basic', name: 'default-basic', k: 1, minFareMinor: 120, stopFeeMinor: 50 },
     { vehicleType: 'city', name: 'default-city', k: 1.5, minFareMinor: 300, stopFeeMinor: 100 },
-    { vehicleType: 'bolt', name: 'default-bolt', k: 1.2, minFareMinor: 200, stopFeeMinor: 80 },
+    { vehicleType: 'premium', name: 'default-premium', k: 1.2, minFareMinor: 200, stopFeeMinor: 80 },
   ];
   for (const p of plans) {
     const has = await PricingRule.findOne({
