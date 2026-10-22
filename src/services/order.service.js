@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { Order, OrderStatusHistory, Driver, Customer, Rating, TripEarning } = require('../models');
+const { Order, OrderStatusHistory, Driver, Customer, Rating, TripEarning, OrderIssue, User } = require('../models');
 const { OrderStatus, assertTransition, isActive } = require('../utils/orderStatus');
 const { haversineMeters, point } = require('../utils/geo');
 const { AppError } = require('../utils/errors');
@@ -122,6 +122,9 @@ async function createOrder({
   paymentMethod,
   passenger,
   idempotencyKey,
+  // Daxili istifadə: bu sürücülərə təklif getməsin (məs. səfəri dayandıran sürücü)
+  excludeDriverIds = [],
+  continuedFromOrderId = null,
 }) {
   if (idempotencyKey) {
     const existing = await Order.findOne({ customerId: customer._id, idempotencyKey });
@@ -201,6 +204,8 @@ async function createOrder({
         promoCode: promoCode ? String(promoCode).toUpperCase() : null,
         pricingSnapshot: priced,
         idempotencyKey: idempotencyKey || null,
+        rejectedDriverIds: excludeDriverIds,
+        continuedFromOrderId,
       }],
       { session }
     );
@@ -408,13 +413,35 @@ async function arrive({ orderId, driver, user }) {
   return transitionByDriver({ orderId, driver, user, toStatus: OrderStatus.DRIVER_ARRIVED });
 }
 
-async function completeTrip({ orderId, driver, user }) {
+/**
+ * early: səfər yarıda dayandırılır ("Səfəri dayandır"). Qiymət gedilən km-ə görə yenidən hesablanmış məbləğlə
+ * əvəz olunur, komissiya da həmin məbləğdən tutulur. { chargedMinor, reason, traveledMeters, latitude, longitude }
+ */
+async function completeTrip({ orderId, driver, user, early = null }) {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const order = await Order.findById(orderId).session(session);
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
     if (String(order.driverId) !== String(driver._id)) throw new AppError('FORBIDDEN', 'Not your order', 403);
+
+    if (early) {
+      if (order.status !== OrderStatus.TRIP_STARTED) {
+        throw new AppError('TRIP_NOT_STARTED', 'Yalnız davam edən səfəri dayandırmaq olar', 409);
+      }
+      const original = (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0;
+      order.set('pricingSnapshot.originalFinalPriceMinor', original);
+      order.set('pricingSnapshot.finalPriceMinor', early.chargedMinor);
+      order.stoppedEarly = {
+        at: new Date(),
+        reason: early.reason,
+        traveledMeters: early.traveledMeters,
+        chargedMinor: early.chargedMinor,
+        originalPriceMinor: original,
+        latitude: early.latitude,
+        longitude: early.longitude,
+      };
+    }
 
     if (order.status === OrderStatus.TRIP_COMPLETED || order.status === OrderStatus.RATING_PENDING || order.status === OrderStatus.COMPLETED) {
       await session.commitTransaction();
@@ -542,6 +569,135 @@ async function redispatchAfterDriverCancel({ order, user, reason }) {
     console.error('redispatch failed for order', String(order._id), e); // worker növbəti tick-də təkrar cəhd edəcək
   }
   return (await Order.findById(order._id)) || updated;
+}
+
+/** Gedilən yol: GPS odometri; o yoxdursa götürmə nöqtəsindən indiki yerə düz xətt × 1.3. Tam marşrutdan çox ola bilməz. */
+function traveledMetersOf(order, lat, lng) {
+  const full = order.distanceMeters || 0;
+  let m = order.tripMeters || 0;
+  if (m < 50 && Number.isFinite(lat) && Number.isFinite(lng)) {
+    const [plng, plat] = order.pickup.coordinates;
+    m = Math.round(haversineMeters(plat, plng, lat, lng) * 1.3);
+  }
+  return full ? Math.min(m, full) : m;
+}
+
+/**
+ * Səfəri yarıda dayandır (maşın xarab oldu, qəza ...):
+ *  1) sərnişindən gedilən km qədər ödəniş (tarif üzrə, ilkin qiymətdən çox olmur), komissiya bu məbləğdən;
+ *  2) səfər bitmiş sayılır, sürücü azad olur;
+ *  3) sərnişinin olduğu yerdən qalan ünvanlara avtomatik YENİ sifariş yaradılır (bu sürücü xaric);
+ *  4) admin üçün problem qeydi (OrderIssue: TRIP_STOPPED) yaranır.
+ */
+async function stopTrip({ orderId, driver, user, reason, latitude, longitude, doneStops = 0 }) {
+  const order = await Order.findById(orderId);
+  if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+  if (String(order.driverId) !== String(driver._id)) throw new AppError('FORBIDDEN', 'Not your order', 403);
+  if (order.status !== OrderStatus.TRIP_STARTED) {
+    throw new AppError('TRIP_NOT_STARTED', 'Yalnız davam edən səfəri dayandırmaq olar', 409);
+  }
+  const cleanReason = String(reason || '').trim().slice(0, 200) || 'Səbəb göstərilməyib';
+  let lat = Number(latitude);
+  let lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    const fresh = await Driver.findById(driver._id).lean();
+    [lng, lat] = (fresh && fresh.location && fresh.location.coordinates) || [NaN, NaN];
+  }
+
+  // ---- Gedilən km qədər qiymət ----
+  const traveledMeters = traveledMetersOf(order, lat, lng);
+  const original = (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0;
+  const elapsedMin = order.startedAt ? Math.max(0, (Date.now() - new Date(order.startedAt).getTime()) / 60000) : 0;
+  let chargedMinor = 0;
+  if (traveledMeters > 0) {
+    const p = await pricingService.calculateTripPrice({
+      distanceMeters: traveledMeters,
+      durationMin: Math.round(elapsedMin),
+      stopCount: 0,
+      vehicleType: order.vehicleType || 'basic',
+    });
+    chargedMinor = Math.min(original, p.finalPriceMinor);
+  }
+
+  const done = await completeTrip({
+    orderId,
+    driver,
+    user,
+    early: { chargedMinor, reason: cleanReason, traveledMeters, latitude: lat, longitude: lng },
+  });
+
+  // ---- Sərnişin üçün davam sifarişi (qalan ünvanlara) ----
+  let newOrder = null;
+  try {
+    const stops = (order.stops || []).map((s) => ({ lat: s.lat, lng: s.lng, label: s.label, address: s.address }));
+    const remaining = stops.slice(Math.max(0, Math.min(Number(doneStops) || 0, stops.length)));
+    if (remaining.length && Number.isFinite(lat) && Number.isFinite(lng)) {
+      const customer = await Customer.findById(order.customerId);
+      const custUser = customer ? await User.findById(customer.userId) : null;
+      if (customer && custUser) {
+        newOrder = await createOrder({
+          customer,
+          user: custUser,
+          pickup: { lat, lng, address: 'Səfərin dayandığı yer', label: 'Səfərin dayandığı yer' },
+          destination: remaining[remaining.length - 1],
+          stops: remaining,
+          vehicleType: order.vehicleType || 'basic',
+          paymentMethod: 'CASH',
+          passenger: order.passenger && order.passenger.forOther ? order.passenger : undefined,
+          idempotencyKey: `continue:${order._id}`,
+          excludeDriverIds: [driver._id],
+          continuedFromOrderId: order._id,
+        });
+        await Order.updateOne({ _id: order._id }, { $set: { continuedToOrderId: newOrder._id } });
+      }
+    }
+  } catch (e) {
+    console.error('[stopTrip] davam sifarişi yaradılmadı', String(order._id), e && e.message);
+  }
+
+  // ---- Admin üçün qeyd + sui-istifadə nəzarəti ----
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const stopsToday = await Order.countDocuments({ driverId: driver._id, 'stoppedEarly.at': { $gte: dayStart } });
+  await OrderIssue.create({
+    orderId: order._id,
+    reporterRole: 'DRIVER',
+    reporterUserId: user._id,
+    type: 'TRIP_STOPPED',
+    description:
+      `Səfər dayandırıldı: ${cleanReason}. Gedilən yol: ${(traveledMeters / 1000).toFixed(2)} km, ` +
+      `alınan: ${(chargedMinor / 100).toFixed(2)} AZN (ilkin: ${(original / 100).toFixed(2)} AZN). ` +
+      `Sürücünün bu gün dayandırdığı səfər sayı: ${stopsToday}.` +
+      (newOrder ? ` Sərnişin üçün yeni sifariş: ${newOrder._id}` : ''),
+  }).catch((e) => console.error('[stopTrip] issue create failed', e && e.message));
+  realtime.toAdmin('trip_stopped', {
+    orderId: order._id,
+    driverId: driver._id,
+    reason: cleanReason,
+    chargedMinor,
+    traveledMeters,
+    stopsToday,
+    warning: stopsToday > 2,
+    newOrderId: newOrder ? newOrder._id : null,
+  });
+
+  // ---- Sərnişinə ----
+  const payload = {
+    orderId: order._id,
+    reason: cleanReason,
+    chargedMinor,
+    traveledMeters,
+    newOrderId: newOrder ? newOrder._id : null,
+    message: newOrder
+      ? `Səfər dayandırıldı (${cleanReason}). Ödəniş: ${(chargedMinor / 100).toFixed(2)} ₼. Sizə yeni sürücü axtarılır.`
+      : `Səfər dayandırıldı (${cleanReason}). Ödəniş: ${(chargedMinor / 100).toFixed(2)} ₼.`,
+  };
+  realtime.toCustomer(order.customerId, 'trip_stopped', payload);
+  if (newOrder) {
+    realtime.toCustomer(order.customerId, 'order_continued', { oldOrderId: order._id, newOrderId: newOrder._id, status: newOrder.status });
+  }
+
+  return { order: done, chargedMinor, traveledMeters, originalPriceMinor: original, newOrderId: newOrder ? newOrder._id : null };
 }
 
 async function cancelOrder({ order, user, role, reason }) {
@@ -805,6 +961,8 @@ module.exports = {
   startTrip,
   arrive,
   completeTrip,
+  stopTrip,
+  traveledMetersOf,
   cancelOrder,
   rateOrder,
   adminReassign,

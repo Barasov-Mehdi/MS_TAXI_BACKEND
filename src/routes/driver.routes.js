@@ -506,6 +506,22 @@ router.post('/orders/:id/complete', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Səfəri yarıda dayandır: gedilən km qədər ödəniş, sərnişin üçün avtomatik yeni sifariş
+router.post('/orders/:id/stop', async (req, res, next) => {
+  try {
+    const r = await orderService.stopTrip({
+      orderId: req.params.id,
+      driver: req.driver,
+      user: req.user,
+      reason: req.body?.reason,
+      latitude: req.body?.latitude,
+      longitude: req.body?.longitude,
+      doneStops: req.body?.doneStops,
+    });
+    ok(res, { ...r, order: await withCustomers(r.order) });
+  } catch (e) { next(e); }
+});
+
 router.post('/orders/:id/cancel', async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, driverId: req.driver._id });

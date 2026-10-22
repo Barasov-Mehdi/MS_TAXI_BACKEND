@@ -10,7 +10,7 @@ module.exports = mongoose.model(
       type: String,
       enum: [
         'DRIVER_NOT_ARRIVED', 'CUSTOMER_NOT_FOUND', 'WRONG_PICKUP', 'WRONG_DESTINATION',
-        'PAYMENT_PROBLEM', 'PRICE_PROBLEM', 'APP_PROBLEM', 'SAFETY', 'ACCIDENT', 'OTHER',
+        'PAYMENT_PROBLEM', 'PRICE_PROBLEM', 'APP_PROBLEM', 'SAFETY', 'ACCIDENT', 'OTHER', 'TRIP_STOPPED',
       ],
       required: true,
     },

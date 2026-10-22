@@ -42,6 +42,8 @@ const orderSchema = new mongoose.Schema(
       discountMinor: Number,
       surgeMultiplier: Number,
       finalPriceMinor: Number,
+      // Səfər yarıda dayandırılıbsa: ilkin (tam) qiymət burada saxlanılır, finalPriceMinor isə gedilən km qədərdir
+      originalFinalPriceMinor: Number,
     },
     // Ardıcıl dispatch: sifariş eyni anda yalnız BİR sürücüyə təklif olunur.
     // offeredToDriverIds - artıq təklif olunmuş (qəbul etməmiş) sürücülərin siyahısı, təkrar təklif olunmur.
@@ -68,6 +70,21 @@ const orderSchema = new mongoose.Schema(
     idempotencyKey: { type: String, default: null },
     commissionApplied: { type: Boolean, default: false },
     ratingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Rating', default: null },
+    // Səfər zamanı GPS ilə ölçülən faktiki yol (metr): "Səfəri dayandır"da ödəniş buna görə hesablanır
+    tripMeters: { type: Number, default: 0 },
+    // Sürücü səfəri yarıda dayandırıb (maşın xarab oldu, qəza ...)
+    stoppedEarly: {
+      at: Date,
+      reason: String,
+      traveledMeters: Number,
+      chargedMinor: Number,
+      originalPriceMinor: Number,
+      latitude: Number,
+      longitude: Number,
+    },
+    // Dayandırılan səfərin davamı üçün avtomatik yaradılan yeni sifariş (və əksinə)
+    continuedToOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+    continuedFromOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     // Sürücü qəbul edib sonra ləğv edəndə sifariş növbəti sürücüyə ötürülür: neçə dəfə ötürüldüyü
     redispatchCount: { type: Number, default: 0 },
     // Yumşaq silmə: admin "sil" edəndə sənəd bazada qalır (sürücü statistikası/hesabatlar pozulmur)

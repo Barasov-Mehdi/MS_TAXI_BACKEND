@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { Driver, Customer } = require('../models');
 const { getSettings } = require('./settings.service');
-const { point } = require('../utils/geo');
+const { point, haversineMeters } = require('../utils/geo');
 const realtime = require('../websocket/emitter');
 const { Order } = require('../models');
 const matchingService = require('./matching.service');
@@ -63,6 +63,7 @@ async function updateDriverLocation(driver, payload) {
   }
   const now = new Date();
   const fixAt = new Date(now.getTime() - fixAgeMs);
+  const prevCoords = driver.location && driver.location.coordinates;
   // Atomik yeniləmə: tam sənədi save() etmirik ki, paralel dəyişikliklər (currentOrderId, isOnline) üstünə yazılmasın.
   await Driver.updateOne(
     { _id: driver._id },
@@ -82,6 +83,13 @@ async function updateDriverLocation(driver, payload) {
 
   if (driver.currentOrderId) {
     const order = await Order.findById(driver.currentOrderId);
+    // Faktiki yol (odometr): yalnız səfər zamanı, dəqiq GPS ilə və real hərəkətdə (sıçrayışlar atılır)
+    if (order && order.status === 'TRIP_STARTED' && prevCoords && !(prevCoords[0] === 0 && prevCoords[1] === 0)) {
+      const step = haversineMeters(prevCoords[1], prevCoords[0], latitude, longitude);
+      if (step >= 5 && step <= 2000 && (accuracy == null || accuracy <= 50)) {
+        await Order.updateOne({ _id: order._id, status: 'TRIP_STARTED' }, { $inc: { tripMeters: Math.round(step) } });
+      }
+    }
     if (order) {
       realtime.toCustomer(order.customerId, 'driver_location_updated', {
         orderId: order._id,
