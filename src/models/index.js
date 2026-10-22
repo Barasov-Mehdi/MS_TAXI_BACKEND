@@ -22,4 +22,5 @@ module.exports = {
   City: require('./City'),
   SupportThread: require('./SupportThread'),
   SupportMessage: require('./SupportMessage'),
+  DriverDeleteRequest: require('./DriverDeleteRequest'),
 };

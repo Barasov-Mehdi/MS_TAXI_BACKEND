@@ -19,6 +19,8 @@ const userSchema = new mongoose.Schema(
     avatarUrl: { type: String, default: null },
     isActive: { type: Boolean, default: true, index: true },
     // Yalnız ADMIN üçün: null → baş admin (bütün şəhərlər); dolu → regional admin (yalnız bu şəhər).
+    // Silinmiş hesab: nömrə azad edilir (yenidən qeydiyyat mümkün olsun), əsli burada saxlanır
+    deletedPhone: { type: String, default: null },
     adminCityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null },
     passwordResetCode: { type: String, default: null },
     passwordResetExpiresAt: { type: Date, default: null },

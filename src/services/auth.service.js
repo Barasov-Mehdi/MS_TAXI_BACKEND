@@ -53,7 +53,19 @@ async function register({ role, phone, password, firstName, lastName, email, cod
     throw e;
   }
   if (role === 'CUSTOMER') await Customer.create({ userId: user._id });
-  if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false, cityId: city._id });
+  if (role === 'DRIVER') {
+    const driver = await Driver.create({ userId: user._id, isVerified: false, cityId: city._id });
+    // Regional ofis yeni sürücünü dərhal görsün (təsdiq gözləyir)
+    try {
+      require('../websocket/emitter').toAdminCity(city._id, 'driver_registered', {
+        driverId: driver._id,
+        name: [firstName, lastName].filter(Boolean).join(' '),
+        phone,
+        cityId: city._id,
+        cityName: city.name,
+      });
+    } catch (_) { /* bildiriş əsas işi pozmasın */ }
+  }
   return user;
 }
 

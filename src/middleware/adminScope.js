@@ -41,10 +41,12 @@ const inScope = (req, driver) => {
  * Sürücünü yükləyir və adminin ona səlahiyyəti olduğunu yoxlayır.
  * Başqa şəhərin sürücüsü regional admin üçün "tapılmadı" kimi görünür (varlığı da sızmasın).
  */
-async function loadDriverInScope(req, driverId) {
+async function loadDriverInScope(req, driverId, { allowDeleted = false } = {}) {
   if (!mongoose.isValidObjectId(String(driverId || ''))) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
   const driver = await Driver.findById(driverId);
   if (!driver || !inScope(req, driver)) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
+  // Silinmiş sürücü üzərində əməliyyat olmaz (yalnız baxış: allowDeleted)
+  if (driver.deletedAt && !allowDeleted) throw new AppError('DRIVER_NOT_FOUND', 'Driver not found', 404);
   return driver;
 }
 

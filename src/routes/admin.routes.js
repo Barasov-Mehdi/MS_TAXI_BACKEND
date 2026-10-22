@@ -16,9 +16,12 @@ const supportService = require('../services/support.service');
 const cityService = require('../services/city.service');
 const { publicUser } = require('../services/auth.service');
 const { normalizePhone } = require('../utils/validators');
+const views = require('../services/adminViews.service');
+const { softDeleteDriver } = require('../services/driverAdmin.service');
 const realtime = require('../websocket/emitter');
 const {
-  Order, Driver, Customer, User, Complaint, OrderIssue, City,
+  Order, Driver, Customer, User, Complaint, OrderIssue, City, Rating, Vehicle, TripEarning,
+  OrderStatusHistory, Message, DriverDeleteRequest, SupportThread,
   PricingRule, PromoCode, WalletTransaction, AuditLog,
 } = require('../models');
 
@@ -69,22 +72,113 @@ router.get('/me', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/** İdarə paneli: əsas göstəricilər (regional admin üçün öz şəhəri). */
+router.get('/stats', async (req, res, next) => {
+  try {
+    const { isSuper, cityId } = scopeOf(req);
+    const dFilter = driverFilter(req, { deletedAt: null });
+    const today = views.dayStartBaku();
+    const ids = await scopedDriverIds(req); // null → hamısı
+    const orderScope = ids ? { driverId: { $in: ids } } : {};
+    const earnScope = ids ? { driverId: { $in: ids } } : {};
+    const [
+      driversTotal, driversOnline, driversPending, driversBlocked,
+      ordersToday, completedToday, cancelledToday, activeNow, earnToday,
+      unreadSupport, pendingDeletes, openIssues,
+    ] = await Promise.all([
+      Driver.countDocuments(dFilter),
+      Driver.countDocuments({ ...dFilter, isOnline: true }),
+      Driver.countDocuments({ ...dFilter, isVerified: false, isActive: true }),
+      Driver.countDocuments({ ...dFilter, isActive: false }),
+      Order.countDocuments({ ...orderScope, createdAt: { $gte: today }, deletedAt: null }),
+      Order.countDocuments({ ...orderScope, completedAt: { $gte: today }, status: { $in: ['COMPLETED', 'TRIP_COMPLETED', 'RATING_PENDING'] } }),
+      Order.countDocuments({ ...orderScope, cancelledAt: { $gte: today } }),
+      Order.countDocuments({ ...orderScope, status: { $in: ['DRIVER_ASSIGNED', 'DRIVER_ON_THE_WAY', 'DRIVER_HEADING_TO_CUSTOMER', 'DRIVER_ARRIVED', 'TRIP_STARTED'] } }),
+      TripEarning.aggregate([
+        { $match: { ...earnScope, completedAt: { $gte: today } } },
+        { $group: { _id: null, gross: { $sum: '$grossMinor' }, commission: { $sum: '$commissionMinor' } } },
+      ]),
+      SupportThread.aggregate([
+        { $match: isSuper ? {} : { cityId: new mongoose.Types.ObjectId(cityId) } },
+        { $group: { _id: null, n: { $sum: '$unreadForAdmin' } } },
+      ]),
+      DriverDeleteRequest.countDocuments({ status: 'PENDING', ...(isSuper ? {} : { cityId: new mongoose.Types.ObjectId(cityId) }) }),
+      OrderIssue.countDocuments({
+        status: 'OPEN',
+        ...(ids ? { orderId: { $in: await Order.find({ driverId: { $in: ids } }).distinct('_id') } } : {}),
+      }),
+    ]);
+    // Son 7 gün (qrafik üçün)
+    const weekStart = new Date(today.getTime() - 6 * 86400000);
+    const week = await TripEarning.aggregate([
+      { $match: { ...earnScope, completedAt: { $gte: weekStart } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$completedAt', timezone: '+04:00' } },
+          trips: { $sum: 1 },
+          gross: { $sum: '$grossMinor' },
+          commission: { $sum: '$commissionMinor' },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+    ok(res, {
+      drivers: { total: driversTotal, online: driversOnline, pending: driversPending, blocked: driversBlocked },
+      orders: { today: ordersToday, completedToday, cancelledToday, activeNow },
+      money: { grossToday: (earnToday[0] && earnToday[0].gross) || 0, commissionToday: (earnToday[0] && earnToday[0].commission) || 0 },
+      unreadSupport: (unreadSupport[0] && unreadSupport[0].n) || 0,
+      pendingDeleteRequests: pendingDeletes,
+      openIssues,
+      week,
+    });
+  } catch (e) { next(e); }
+});
+
 // =============================================================== Sifarişlər
 
-router.get('/orders', async (req, res) => {
-  const q = {};
-  if (req.query.status) q.status = req.query.status;
-  // Silinmiş (yumşaq) sifarişlər standart olaraq göstərilmir: ?includeDeleted=1 ilə görünür
-  if (req.query.includeDeleted !== '1') q.deletedAt = null;
-  // Regional admin: yalnız öz şəhərinin sürücülərinə təyin olunmuş sifarişlər
-  const ids = await scopedDriverIds(req);
-  if (ids) q.driverId = { $in: ids };
-  else if (req.query.cityId) {
-    const cityDrivers = await Driver.find(driverFilter(req)).distinct('_id');
-    q.driverId = { $in: cityDrivers };
-  }
-  const orders = await Order.find(q).sort({ createdAt: -1 }).limit(100);
-  ok(res, { orders });
+const STATUS_GROUPS = {
+  active: ['CREATED', 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'DRIVER_ON_THE_WAY', 'DRIVER_HEADING_TO_CUSTOMER', 'DRIVER_ARRIVED', 'TRIP_STARTED', 'QUEUED', 'DRIVER_FINISHING_CURRENT_TRIP', 'WAITING_FOR_ADMIN', 'DISPUTED'],
+  completed: ['COMPLETED', 'TRIP_COMPLETED', 'RATING_PENDING'],
+  cancelled: ['CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'ADMIN_CANCELLED', 'EXPIRED'],
+};
+
+/**
+ * Sifarişlər: ?group=active|completed|cancelled | ?status=, ?driverId=, ?from=&to= (ISO), ?q= (sifariş id),
+ * ?page=&limit=. Regional admin yalnız öz şəhərinin sürücülərinin sifarişlərini görür.
+ */
+router.get('/orders', async (req, res, next) => {
+  try {
+    const q = {};
+    if (req.query.group && STATUS_GROUPS[req.query.group]) q.status = { $in: STATUS_GROUPS[req.query.group] };
+    else if (req.query.status) q.status = String(req.query.status);
+    // Silinmiş (yumşaq) sifarişlər standart olaraq göstərilmir: ?includeDeleted=1 ilə görünür
+    if (req.query.includeDeleted !== '1') q.deletedAt = null;
+    if (req.query.from || req.query.to) {
+      q.createdAt = {};
+      const f = new Date(req.query.from);
+      const t = new Date(req.query.to);
+      if (!Number.isNaN(f.getTime())) q.createdAt.$gte = f;
+      if (!Number.isNaN(t.getTime())) q.createdAt.$lte = t;
+    }
+    if (req.query.q) {
+      const id = views.oid(String(req.query.q).trim());
+      if (id) q._id = id;
+    }
+    if (req.query.driverId) {
+      q.driverId = (await loadDriverInScope(req, req.query.driverId, { allowDeleted: true }))._id;
+    } else {
+      // Regional admin: yalnız öz şəhərinin sürücülərinə təyin olunmuş sifarişlər
+      const ids = await scopedDriverIds(req);
+      if (ids) q.driverId = { $in: ids };
+      else if (req.query.cityId) q.driverId = { $in: await Driver.find(driverFilter(req)).distinct('_id') };
+    }
+    const { skip, limit, page } = views.paging(req.query);
+    const [orders, total] = await Promise.all([
+      Order.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Order.countDocuments(q),
+    ]);
+    ok(res, { orders: await views.enrichOrders(orders), total, page, limit });
+  } catch (e) { next(e); }
 });
 
 /**
@@ -122,6 +216,32 @@ router.get('/orders/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/** Sifarişin tam təfərrüatı: sürücü, müştəri, status tarixçəsi, reytinq, şikayətlər, problemlər, qazanc, çat. */
+router.get('/orders/:id/details', async (req, res, next) => {
+  try {
+    const order = await loadOrderInScope(req, req.params.id);
+    const o = order.toObject();
+    const [enriched] = await views.enrichOrders([o]);
+    const [history, rating, complaints, issues, earning, messages] = await Promise.all([
+      OrderStatusHistory.find({ orderId: o._id }).sort({ createdAt: 1 }).lean(),
+      Rating.findOne({ orderId: o._id }).lean(),
+      Complaint.find({ orderId: o._id }).sort({ createdAt: -1 }).lean(),
+      OrderIssue.find({ orderId: o._id }).sort({ createdAt: -1 }).lean(),
+      TripEarning.findOne({ orderId: o._id }).lean(),
+      Message.find({ orderId: o._id }).sort({ createdAt: 1 }).limit(200).lean().catch(() => []),
+    ]);
+    const drv = o.driverId ? await Driver.findById(o.driverId).select('userId').lean() : null;
+    const driverUserId = drv ? String(drv.userId) : null;
+    const chat = (messages || []).map((m) => ({
+      _id: m._id,
+      text: m.message,
+      createdAt: m.createdAt,
+      senderRole: driverUserId && String(m.senderId) === driverUserId ? 'DRIVER' : 'CUSTOMER',
+    }));
+    ok(res, { order: enriched, history, rating, complaints, issues, earning, messages: chat });
+  } catch (e) { next(e); }
+});
+
 router.post('/orders/:id/cancel', async (req, res, next) => {
   try {
     const order = await loadOrderInScope(req, req.params.id);
@@ -146,32 +266,90 @@ router.post('/orders/:id/reassign', async (req, res, next) => {
 
 // =============================================================== Sürücülər
 
-/** ?cityId=<id> | none (yalnız baş admin), ?q= ad/telefon, ?online=1 */
+/**
+ * Sürücülər: ?status=pending|active|blocked|online|deleted, ?q= ad/telefon/nömrə nişanı,
+ * ?cityId=<id>|none (yalnız baş admin), ?page=&limit=
+ */
 router.get('/drivers', async (req, res, next) => {
   try {
-    const q = driverFilter(req);
+    const st = String(req.query.status || '');
+    const q = driverFilter(req, { deletedAt: st === 'deleted' ? { $ne: null } : null });
+    if (st === 'pending') Object.assign(q, { isVerified: false, isActive: true });
+    if (st === 'active') Object.assign(q, { isVerified: true, isActive: true });
+    if (st === 'blocked') q.isActive = false;
+    if (st === 'online') q.isOnline = true;
+    if (st === 'deleted' && !scopeOf(req).isSuper) throw new AppError('FORBIDDEN', 'Insufficient role', 403);
     if (req.query.online === '1') q.isOnline = true;
     if (req.query.q) {
       const text = String(req.query.q).trim().slice(0, 50);
       const rx = new RegExp(text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       const phone = normalizePhone(text);
-      const users = await User.find({
-        role: 'DRIVER',
-        $or: [{ firstName: rx }, { lastName: rx }, { phone: rx }, ...(phone ? [{ phone }] : [])],
-      }).distinct('_id');
-      q.userId = { $in: users };
+      const [users, vehicles] = await Promise.all([
+        User.find({
+          role: 'DRIVER',
+          $or: [{ firstName: rx }, { lastName: rx }, { phone: rx }, { deletedPhone: rx }, ...(phone ? [{ phone }] : [])],
+        }).distinct('_id'),
+        Vehicle.find({ plateNumber: rx }).distinct('driverId'),
+      ]);
+      q.$or = [{ userId: { $in: users } }, { _id: { $in: vehicles } }];
     }
-    const drivers = await Driver.find(q).populate('userId').populate('cityId', 'name').sort({ createdAt: -1 }).limit(200);
-    ok(res, { drivers });
+    const { skip, limit, page } = views.paging(req.query, 30);
+    const [docs, total] = await Promise.all([
+      Driver.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).select('-fcmToken').lean(),
+      Driver.countDocuments(q),
+    ]);
+    const info = await views.driverInfoMap(docs.map((d) => d._id));
+    const drivers = docs.map((d) => ({ ...d, ...info.get(String(d._id)), _id: d._id }));
+    ok(res, { drivers, total, page, limit });
   } catch (e) { next(e); }
 });
 
 router.get('/drivers/:id', async (req, res, next) => {
   try {
-    const driver = await loadDriverInScope(req, req.params.id);
+    const driver = await loadDriverInScope(req, req.params.id, { allowDeleted: true });
     await driver.populate('userId');
     await driver.populate('cityId', 'name');
     ok(res, { driver });
+  } catch (e) { next(e); }
+});
+
+/** Sürücü kartı: profil, avtomobil, statistika, son sifarişlər, reytinqlər, balans hərəkəti, silmə sorğusu. */
+router.get('/drivers/:id/overview', async (req, res, next) => {
+  try {
+    const driver = await loadDriverInScope(req, req.params.id, { allowDeleted: true });
+    const d = driver.toObject();
+    delete d.fcmToken;
+    const [user, vehicle, city, totals, orders, ratings, transactions, deleteRequest, complaints] = await Promise.all([
+      User.findById(d.userId).select('firstName lastName phone deletedPhone isActive createdAt').lean(),
+      Vehicle.findOne({ driverId: d._id }).sort({ createdAt: -1 }).lean(),
+      d.cityId ? City.findById(d.cityId).select('name').lean() : null,
+      TripEarning.aggregate([
+        { $match: { driverId: d._id } },
+        { $group: { _id: null, trips: { $sum: 1 }, gross: { $sum: '$grossMinor' }, commission: { $sum: '$commissionMinor' } } },
+      ]),
+      Order.find({ driverId: d._id }).sort({ createdAt: -1 }).limit(15).lean(),
+      Rating.find({ driverId: d._id }).sort({ createdAt: -1 }).limit(20).lean(),
+      WalletTransaction.find({ driverId: d._id }).sort({ createdAt: -1 }).limit(20).lean(),
+      DriverDeleteRequest.findOne({ driverId: d._id }).sort({ createdAt: -1 }).lean(),
+      Complaint.countDocuments({ driverId: d._id }),
+    ]);
+    const customers = await views.customerInfoMap(ratings.map((r) => r.customerId));
+    ok(res, {
+      driver: d,
+      user: user ? { ...user, phone: user.deletedPhone || user.phone } : null,
+      vehicle: vehicle ? { ...vehicle, plateNumber: String(vehicle.plateNumber || '').replace(/#del\d+$/, '') } : null,
+      city,
+      stats: {
+        trips: (totals[0] && totals[0].trips) || 0,
+        grossMinor: (totals[0] && totals[0].gross) || 0,
+        commissionMinor: (totals[0] && totals[0].commission) || 0,
+        complaints,
+      },
+      orders: await views.enrichOrders(orders),
+      ratings: ratings.map((r) => ({ ...r, customer: customers.get(String(r.customerId)) || null })),
+      transactions,
+      deleteRequest,
+    });
   } catch (e) { next(e); }
 });
 
@@ -210,6 +388,119 @@ router.patch('/drivers/:id', async (req, res, next) => {
       pushService.notifyAccount(driver._id, driver.isActive ? 'activated' : 'blocked').catch(() => {});
     }
     ok(res, { driver });
+  } catch (e) { next(e); }
+});
+
+// =============================================================== Sürücünü silmək
+// Regional admin silə bilməz: sorğu göndərir. Baş admin birbaşa silir və ya sorğunu təsdiqləyir.
+
+router.post(
+  '/drivers/:id/delete-request',
+  validated(Joi.object({ reason: Joi.string().trim().min(3).max(500).required() })),
+  async (req, res, next) => {
+    try {
+      const driver = await loadDriverInScope(req, req.params.id);
+      const info = (await views.driverInfoMap([driver._id])).get(String(driver._id)) || {};
+      let request;
+      try {
+        request = await DriverDeleteRequest.create({
+          driverId: driver._id,
+          cityId: driver.cityId || null,
+          requestedBy: req.user._id,
+          requestedByName: views.displayName(req.user),
+          reason: req.body.reason,
+          driverName: info.name || '',
+          driverPhone: info.phone || '',
+        });
+      } catch (e) {
+        if (e && e.code === 11000) throw new AppError('REQUEST_EXISTS', 'Bu sürücü üçün artıq gözləyən sorğu var', 409);
+        throw e;
+      }
+      await audit(req, 'DRIVER_DELETE_REQUEST', 'Driver', driver._id, null, { requestId: request._id }, req.body.reason);
+      realtime.toAdmin('delete_request', { request, cityName: info.cityName || '' });
+      ok(res, { request }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+/** Sorğular: baş admin hamısını, regional admin öz şəhərininkiləri görür. ?status=PENDING|APPROVED|REJECTED */
+router.get('/delete-requests', async (req, res, next) => {
+  try {
+    const { isSuper, cityId } = scopeOf(req);
+    const q = isSuper ? {} : { cityId: new mongoose.Types.ObjectId(cityId) };
+    if (req.query.status) q.status = String(req.query.status);
+    const requests = await DriverDeleteRequest.find(q).sort({ createdAt: -1 }).limit(200).lean();
+    const cities = await City.find({ _id: { $in: requests.map((r) => r.cityId).filter(Boolean) } }).select('name').lean();
+    const cityName = new Map(cities.map((c) => [String(c._id), c.name]));
+    ok(res, { requests: requests.map((r) => ({ ...r, cityName: r.cityId ? cityName.get(String(r.cityId)) || '' : '' })) });
+  } catch (e) { next(e); }
+});
+
+/** Regional admin öz sorğusunu geri götürə bilər. */
+router.post('/delete-requests/:id/cancel', async (req, res, next) => {
+  try {
+    const r = await DriverDeleteRequest.findOne({ _id: views.oid(req.params.id), status: 'PENDING' });
+    if (!r) throw new AppError('NOT_FOUND', 'Sorğu tapılmadı', 404);
+    if (!scopeOf(req).isSuper && String(r.requestedBy) !== String(req.user._id)) throw new AppError('FORBIDDEN', 'Insufficient role', 403);
+    r.status = 'CANCELLED';
+    r.reviewedBy = req.user._id;
+    r.reviewedAt = new Date();
+    await r.save();
+    ok(res, { request: r });
+  } catch (e) { next(e); }
+});
+
+router.post(
+  '/delete-requests/:id/approve',
+  requireSuperAdmin,
+  validated(Joi.object({ note: Joi.string().allow('').max(500) })),
+  async (req, res, next) => {
+    try {
+      const r = await DriverDeleteRequest.findOne({ _id: views.oid(req.params.id), status: 'PENDING' });
+      if (!r) throw new AppError('NOT_FOUND', 'Sorğu tapılmadı', 404);
+      await softDeleteDriver(r.driverId, req.user);
+      r.status = 'APPROVED';
+      r.reviewedBy = req.user._id;
+      r.reviewedAt = new Date();
+      r.reviewNote = req.body.note || '';
+      await r.save();
+      await audit(req, 'DRIVER_DELETE', 'Driver', r.driverId, null, { requestId: r._id }, r.reason);
+      realtime.toAdminCity(r.cityId, 'delete_request_updated', { request: r });
+      ok(res, { request: r });
+    } catch (e) { next(e); }
+  }
+);
+
+router.post(
+  '/delete-requests/:id/reject',
+  requireSuperAdmin,
+  validated(Joi.object({ note: Joi.string().allow('').max(500) })),
+  async (req, res, next) => {
+    try {
+      const r = await DriverDeleteRequest.findOne({ _id: views.oid(req.params.id), status: 'PENDING' });
+      if (!r) throw new AppError('NOT_FOUND', 'Sorğu tapılmadı', 404);
+      r.status = 'REJECTED';
+      r.reviewedBy = req.user._id;
+      r.reviewedAt = new Date();
+      r.reviewNote = req.body.note || '';
+      await r.save();
+      realtime.toAdminCity(r.cityId, 'delete_request_updated', { request: r });
+      ok(res, { request: r });
+    } catch (e) { next(e); }
+  }
+);
+
+/** Baş admin sürücünü birbaşa silir. */
+router.delete('/drivers/:id', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const driver = await loadDriverInScope(req, req.params.id);
+    await softDeleteDriver(driver._id, req.user);
+    await DriverDeleteRequest.updateMany(
+      { driverId: driver._id, status: 'PENDING' },
+      { $set: { status: 'APPROVED', reviewedBy: req.user._id, reviewedAt: new Date() } }
+    );
+    await audit(req, 'DRIVER_DELETE', 'Driver', driver._id, null, null, req.body && req.body.reason);
+    ok(res, { deleted: true });
   } catch (e) { next(e); }
 });
 
@@ -274,7 +565,7 @@ router.post(
   async (req, res, next) => {
     try {
       if (req.body.cityId) req.query.cityId = req.body.cityId;
-      const q = driverFilter(req);
+      const q = driverFilter(req, { deletedAt: null });
       if (req.body.onlyActive) q.isActive = true;
       const r = await supportService.broadcast(req.user, q, req.body.text);
       await audit(req, 'SUPPORT_BROADCAST', 'Driver', null, null, { ...r, text: req.body.text, cityId: q.cityId || null });
@@ -305,7 +596,9 @@ router.get('/wallet-transactions', async (req, res, next) => {
       const ids = await scopedDriverIds(req);
       if (ids) q.driverId = { $in: ids };
     }
-    ok(res, { transactions: await WalletTransaction.find(q).sort({ createdAt: -1 }).limit(200) });
+    const txs = await WalletTransaction.find(q).sort({ createdAt: -1 }).limit(200).lean();
+    const info = await views.driverInfoMap(txs.map((t) => t.driverId));
+    ok(res, { transactions: txs.map((t) => ({ ...t, driver: info.get(String(t.driverId)) || null })) });
   } catch (e) { next(e); }
 });
 
@@ -328,7 +621,7 @@ router.post('/drivers/:id/wallet/top-up', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/drivers/:id/wallet/adjustment', async (req, res, next) => {
+router.post('/drivers/:id/wallet/adjustment', requireSuperAdmin, async (req, res, next) => {
   try {
     const driver = await loadDriverInScope(req, req.params.id);
     const tx = await walletService.applyTransaction({
@@ -566,18 +859,84 @@ router.get('/customers', requireSuperAdmin, async (req, res) => {
   ok(res, { customers });
 });
 
-router.get('/complaints', requireSuperAdmin, async (req, res) => {
-  ok(res, { complaints: await Complaint.find().sort({ createdAt: -1 }).limit(100) });
-});
+// ---- Müştəri rəyləri (reytinq və şikayət) — regional admin öz şəhərinin sürücüləri üzrə ----
 
-router.patch('/complaints/:id', requireSuperAdmin, async (req, res, next) => {
+/** Reytinqlər: ?maxScore=3 (yalnız aşağı), ?withComment=1, ?driverId=, ?page= */
+router.get('/ratings', async (req, res, next) => {
   try {
-    const c = await Complaint.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if (!c) throw new AppError('NOT_FOUND', 'Complaint not found', 404);
-    await audit(req, 'COMPLAINT_UPDATE', 'Complaint', c._id, null, req.body, req.body.reason);
-    ok(res, { complaint: c });
+    const q = {};
+    if (req.query.driverId) q.driverId = (await loadDriverInScope(req, req.query.driverId, { allowDeleted: true }))._id;
+    else {
+      const ids = await scopedDriverIds(req);
+      if (ids) q.driverId = { $in: ids };
+    }
+    if (req.query.maxScore) q.score = { $lte: Number(req.query.maxScore) || 5 };
+    if (req.query.withComment === '1') q.comment = { $nin: [null, ''] };
+    const { skip, limit, page } = views.paging(req.query, 30);
+    const [docs, total] = await Promise.all([
+      Rating.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Rating.countDocuments(q),
+    ]);
+    const [drivers, customers] = await Promise.all([
+      views.driverInfoMap(docs.map((r) => r.driverId)),
+      views.customerInfoMap(docs.map((r) => r.customerId)),
+    ]);
+    ok(res, {
+      ratings: docs.map((r) => ({ ...r, driver: drivers.get(String(r.driverId)) || null, customer: customers.get(String(r.customerId)) || null })),
+      total,
+      page,
+      limit,
+    });
   } catch (e) { next(e); }
 });
+
+/** Şikayətlər: ?status=OPEN|IN_REVIEW|RESOLVED|REJECTED... */
+router.get('/complaints', async (req, res, next) => {
+  try {
+    const q = {};
+    const ids = await scopedDriverIds(req);
+    if (ids) q.driverId = { $in: ids };
+    if (req.query.status) q.status = String(req.query.status);
+    const { skip, limit, page } = views.paging(req.query, 30);
+    const [docs, total] = await Promise.all([
+      Complaint.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Complaint.countDocuments(q),
+    ]);
+    const [drivers, customers] = await Promise.all([
+      views.driverInfoMap(docs.map((c) => c.driverId)),
+      views.customerInfoMap(docs.map((c) => c.customerId)),
+    ]);
+    ok(res, {
+      complaints: docs.map((c) => ({ ...c, driver: c.driverId ? drivers.get(String(c.driverId)) || null : null, customer: customers.get(String(c.customerId)) || null })),
+      total,
+      page,
+      limit,
+    });
+  } catch (e) { next(e); }
+});
+
+router.patch(
+  '/complaints/:id',
+  validated(Joi.object({
+    status: Joi.string().valid('OPEN', 'IN_REVIEW', 'WAITING_FOR_CUSTOMER', 'WAITING_FOR_DRIVER', 'RESOLVED', 'REJECTED'),
+    adminNotes: Joi.string().allow('').max(2000),
+  })),
+  async (req, res, next) => {
+    try {
+      const c = await Complaint.findById(views.oid(req.params.id));
+      if (!c) throw new AppError('NOT_FOUND', 'Complaint not found', 404);
+      if (!scopeOf(req).isSuper) {
+        if (!c.driverId) throw new AppError('NOT_FOUND', 'Complaint not found', 404);
+        await loadDriverInScope(req, c.driverId, { allowDeleted: true });
+      }
+      if (req.body.status !== undefined) c.status = req.body.status;
+      if (req.body.adminNotes !== undefined) c.adminNotes = req.body.adminNotes;
+      await c.save();
+      await audit(req, 'COMPLAINT_UPDATE', 'Complaint', c._id, null, req.body);
+      ok(res, { complaint: c });
+    } catch (e) { next(e); }
+  }
+);
 
 // ---- Tariflər, promo kodlar, ayarlar ----
 router.get('/pricing-rules', requireSuperAdmin, async (req, res) => {
