@@ -261,11 +261,15 @@ function notifyAccount(driverId, kind) {
   const map = {
     verified: ['Hesabınız təsdiqləndi', 'Artıq onlayn olub sifariş qəbul edə bilərsiniz.'],
     unverified: ['Hesab təsdiqi götürüldü', 'Administrator hesabınızın təsdiqini götürdü. Əlavə məlumat üçün idarə ilə əlaqə saxlayın.'],
-    blocked: ['Hesabınız deaktiv edildi', 'Administrator hesabınızı deaktiv etdi. Əlavə məlumat üçün idarə ilə əlaqə saxlayın.'],
-    activated: ['Hesabınız aktivləşdirildi', 'Hesabınız yenidən aktivdir.'],
+    blocked: ['Hesabınız bloklandı', 'Administrator hesabınızı bloklayıb. Ətraflı məlumat üçün ofislə əlaqə saxlayın.'],
+    activated: ['Blok qaldırıldı', 'Hesabınız yenidən aktivdir. İndi onlayn olub sifariş qəbul edə bilərsiniz.'],
   };
   const t = map[kind];
   if (!t) return Promise.resolve(false);
+  // Tətbiq açıqdırsa ekranda dərhal göstərilsin (push gecikə və ya söndürülə bilər)
+  try {
+    require('../websocket/emitter').toDriver(driverId, 'account_status', { kind, title: t[0], body: t[1] });
+  } catch (_) { /* bildiriş əsas işi pozmasın */ }
   return sendNotification(driverId, {
     title: t[0],
     body: t[1],

@@ -226,8 +226,12 @@ router.post('/support/read', async (req, res, next) => {
 
 router.post('/online', async (req, res, next) => {
   try {
-    if (!req.driver.isVerified || !req.driver.isActive) {
-      throw new AppError('DRIVER_NOT_VERIFIED', 'Driver is not verified/active', 403);
+    // Bloklanmış sürücüyə "təsdiqlənməyib" yox, bloklandığı bildirilir
+    if (!req.driver.isActive) {
+      throw new AppError('DRIVER_BLOCKED', 'Administrator hesabınızı bloklayıb. Ətraflı məlumat üçün ofislə əlaqə saxlayın', 403);
+    }
+    if (!req.driver.isVerified) {
+      throw new AppError('DRIVER_NOT_VERIFIED', 'Hesabınız hələ administrator tərəfindən təsdiqlənməyib', 403);
     }
     // Balans çatmırsa sürücü onlayn olub heç vaxt sifariş almazdı (matching LOW_BALANCE ilə atlayır): açıq xəta göstərilir.
     const st = await getSettings();

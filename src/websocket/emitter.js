@@ -20,7 +20,7 @@ function emitToParties(order, event, payload) {
 
 // Bu hadisələr sifarişin/sürücünün vəziyyətinin dəyişdiyini bildirir - admin panelə də ötürülür
 const ORDER_EVENTS = new Set(['order_status_changed', 'order_cancelled', 'trip_completed', 'order_expired', 'driver_assigned']);
-const DRIVER_EVENTS = { balance_updated: 'balance', driver_offline: 'offline', documents_updated: 'documents', queued_order_activated: 'order' };
+const DRIVER_EVENTS = { balance_updated: 'balance', driver_offline: 'offline', documents_updated: 'documents', queued_order_activated: 'order', account_status: 'account' };
 const feed = () => require('./adminFeed');
 
 module.exports = {
