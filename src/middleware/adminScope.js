@@ -65,10 +65,24 @@ async function loadOrderInScope(req, orderId) {
   const order = await Order.findById(orderId);
   if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
   if (scopeOf(req).isSuper) return order;
+  // Sifarişin şəhəri adminin şəhəridirsə (sürücü tapılmasa da) görünür
+  if (order.cityId && String(order.cityId) === scopeOf(req).cityId) return order;
   if (!order.driverId) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
   const n = await Driver.countDocuments(driverFilter(req, { _id: order.driverId }));
   if (!n) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
   return order;
 }
 
-module.exports = { scopeOf, requireSuperAdmin, driverFilter, inScope, loadDriverInScope, scopedDriverIds, loadOrderInScope };
+/**
+ * Sifariş sorğusu üçün səlahiyyət süzgəci. Regional admin: öz şəhərinin sürücülərinin sifarişləri
+ * VƏ götürmə nöqtəsi öz şəhərində olan (sürücüsüz/cavabsız da) sifarişlər. Baş admin: null (məhdudiyyət yox).
+ */
+async function scopedOrderFilter(req) {
+  const { isSuper, cityId } = scopeOf(req);
+  if (isSuper) return null;
+  const ids = await scopedDriverIds(req);
+  return { $or: [{ driverId: { $in: ids } }, { cityId: new mongoose.Types.ObjectId(cityId) }] };
+}
+
+module.exports = {
+  scopedOrderFilter, scopeOf, requireSuperAdmin, driverFilter, inScope, loadDriverInScope, scopedDriverIds, loadOrderInScope };

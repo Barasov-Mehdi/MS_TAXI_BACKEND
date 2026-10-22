@@ -14,6 +14,13 @@ const citySchema = new mongoose.Schema(
     officeAddress: { type: String, default: '', maxlength: 300 },
     officePhone: { type: String, default: '', maxlength: 30 },
     workHours: { type: String, default: '', maxlength: 120 },
+    // Şəhər mərkəzi: sifarişin hansı şəhərə aid olduğunu (ən yaxın mərkəz) təyin etmək üçün
+    center: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+    },
+    // Bu radiusdan uzaq sifariş bu şəhərə aid edilmir (km)
+    radiusKm: { type: Number, default: 50 },
   },
   { timestamps: true }
 );

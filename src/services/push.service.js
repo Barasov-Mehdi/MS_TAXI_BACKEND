@@ -170,6 +170,18 @@ function notifyChatMessage(driverId, { orderId, messageId, senderName, text }) {
   });
 }
 
+/** Sənəd yoxlanıldı (təsdiq / rədd). */
+function notifyDocument(driverId, { label, approved, reason }) {
+  return sendNotification(driverId, {
+    title: approved ? 'Sənəd təsdiqləndi' : 'Sənəd rədd edildi',
+    body: approved ? label : `${label}: ${reason || 'yenidən yükləyin'}`,
+    type: 'documents',
+    channel: 'account',
+    tag: 'documents',
+    data: {},
+  });
+}
+
 /** Ofisdən (admin) sürücüyə mesaj. */
 function notifySupportMessage(driverId, { messageId, adminName, text }) {
   return sendNotification(driverId, {
@@ -313,6 +325,7 @@ module.exports = {
   sendNotification,
   notifyChatMessage,
   notifySupportMessage,
+  notifyDocument,
   notifyOrderCancelled,
   notifyQueuedOrder,
   notifyOrderAssigned,

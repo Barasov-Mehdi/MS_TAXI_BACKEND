@@ -334,6 +334,14 @@ async function expireOrder(orderId, reason = 'NO_DRIVER_ACCEPTED') {
   realtime.toCustomer(previous.customerId, 'order_status_changed', payload);
   realtime.toCustomer(previous.customerId, 'order_expired', payload);
   realtime.toOrder(previous._id, 'order_status_changed', payload);
+  // Regional ofis görsün: müştəriyə zəng edib sürücünü əl ilə təyin edə bilər
+  if (realtime.toAdminCity) {
+    realtime.toAdminCity(previous.cityId || null, 'order_unassigned', {
+      orderId: previous._id,
+      pickupAddress: previous.pickupAddress || '',
+      priceMinor: previous.pricingSnapshot && previous.pricingSnapshot.finalPriceMinor,
+    });
+  }
   return { expired: true };
 }
 

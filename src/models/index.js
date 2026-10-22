@@ -23,4 +23,5 @@ module.exports = {
   SupportThread: require('./SupportThread'),
   SupportMessage: require('./SupportMessage'),
   DriverDeleteRequest: require('./DriverDeleteRequest'),
+  DriverDocument: require('./DriverDocument'),
 };

@@ -114,7 +114,7 @@ test('regional admin öz sürücüsünə yaza bilir', async () => {
 
 test('ayarlar, tariflər, adminlər yalnız baş admin üçündür', async () => {
   mockUser = regionalA;
-  for (const [m, url] of [['get', '/admin/settings'], ['patch', '/admin/settings'], ['get', '/admin/pricing-rules'], ['get', '/admin/admins'], ['post', '/admin/cities'], ['get', '/admin/customers']]) {
+  for (const [m, url] of [['get', '/admin/settings'], ['patch', '/admin/settings'], ['get', '/admin/pricing-rules'], ['get', '/admin/admins'], ['post', '/admin/cities']]) {
     const r = await request(app)[m](url).send({});
     expect([url, r.status]).toEqual([url, 403]);
   }
@@ -137,4 +137,13 @@ test('regional admin sürücü siyahısında yalnız öz şəhərini görür', a
   await request(app).get(`/admin/drivers?cityId=${CITY_B}`);
   const [q] = models.Driver.find.mock.calls[0];
   expect(String(q.cityId)).toBe(CITY_A);
+});
+
+test('regional admin öz şəhərinin sürücüsüz (cavabsız) sifarişini görür, başqa şəhərinkini yox', async () => {
+  const { loadOrderInScope } = require('../src/middleware/adminScope');
+  const req = { user: regionalA };
+  models.Order.findById.mockResolvedValueOnce({ _id: 'o1', cityId: CITY_A, driverId: null });
+  await expect(loadOrderInScope(req, '444444444444444444444444')).resolves.toMatchObject({ _id: 'o1' });
+  models.Order.findById.mockResolvedValueOnce({ _id: 'o2', cityId: CITY_B, driverId: null });
+  await expect(loadOrderInScope(req, '444444444444444444444444')).rejects.toMatchObject({ code: 'ORDER_NOT_FOUND' });
 });

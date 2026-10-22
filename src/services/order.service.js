@@ -181,6 +181,8 @@ async function createOrder({
   const priced = await pricingService.calculateTripPrice({ ...tripInput, promoDiscountMinor: discountMinor });
 
   const dispatchFields = await dispatchService.initialDispatchFields();
+  // Regional ofis üçün: sifariş hansı şəhərə aiddir (sürücü tapılmasa da ofis görsün)
+  const orderCity = await require('./city.service').cityForPoint(pickup.lat, pickup.lng).catch(() => null);
 
   let order;
   const session = await mongoose.startSession();
@@ -190,6 +192,7 @@ async function createOrder({
       [{
         ...dispatchFields,
         customerId: customer._id,
+        cityId: orderCity ? orderCity.id : null,
         status: OrderStatus.SEARCHING_DRIVER,
         pickup: point(pickup.lng, pickup.lat),
         pickupAddress: pickup.address ? String(pickup.address).slice(0, 300) : '',

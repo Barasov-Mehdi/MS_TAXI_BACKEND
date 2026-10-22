@@ -4,6 +4,8 @@ const orderSchema = new mongoose.Schema(
   {
     customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
     driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver', default: null, index: true },
+    // Götürmə nöqtəsinə ən yaxın şəhər (regional ofis cavabsız sifarişləri də görsün)
+    cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null, index: true },
     status: { type: String, required: true, index: true },
     pickup: {
       type: { type: String, enum: ['Point'], default: 'Point' },

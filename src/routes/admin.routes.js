@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const Joi = require('joi');
 const { authenticate, requireRoles } = require('../middleware/auth');
 const {
-  scopeOf, requireSuperAdmin, driverFilter, loadDriverInScope, scopedDriverIds, loadOrderInScope,
+  scopeOf, requireSuperAdmin, driverFilter, loadDriverInScope, scopedDriverIds, loadOrderInScope, scopedOrderFilter,
 } = require('../middleware/adminScope');
 const { ok, AppError } = require('../utils/errors');
 const { getSettings, setSetting } = require('../services/settings.service');
@@ -21,7 +21,7 @@ const { softDeleteDriver } = require('../services/driverAdmin.service');
 const realtime = require('../websocket/emitter');
 const {
   Order, Driver, Customer, User, Complaint, OrderIssue, City, Rating, Vehicle, TripEarning,
-  OrderStatusHistory, Message, DriverDeleteRequest, SupportThread,
+  OrderStatusHistory, Message, DriverDeleteRequest, SupportThread, DriverDocument,
   PricingRule, PromoCode, WalletTransaction, AuditLog,
 } = require('../models');
 
@@ -79,12 +79,12 @@ router.get('/stats', async (req, res, next) => {
     const dFilter = driverFilter(req, { deletedAt: null });
     const today = views.dayStartBaku();
     const ids = await scopedDriverIds(req); // null → hamısı
-    const orderScope = ids ? { driverId: { $in: ids } } : {};
+    const orderScope = (await scopedOrderFilter(req)) || {};
     const earnScope = ids ? { driverId: { $in: ids } } : {};
     const [
       driversTotal, driversOnline, driversPending, driversBlocked,
       ordersToday, completedToday, cancelledToday, activeNow, earnToday,
-      unreadSupport, pendingDeletes, openIssues,
+      unreadSupport, pendingDeletes, openIssues, searchingNow, expiredToday, docsPending,
     ] = await Promise.all([
       Driver.countDocuments(dFilter),
       Driver.countDocuments({ ...dFilter, isOnline: true }),
@@ -107,6 +107,9 @@ router.get('/stats', async (req, res, next) => {
         status: 'OPEN',
         ...(ids ? { orderId: { $in: await Order.find({ driverId: { $in: ids } }).distinct('_id') } } : {}),
       }),
+      Order.countDocuments({ ...orderScope, status: 'SEARCHING_DRIVER' }),
+      Order.countDocuments({ ...orderScope, status: 'EXPIRED', updatedAt: { $gte: today } }),
+      DriverDocument.distinct('driverId', { status: 'PENDING', ...(ids ? { driverId: { $in: ids } } : {}) }).then((l) => l.length),
     ]);
     // Son 7 gün (qrafik üçün)
     const weekStart = new Date(today.getTime() - 6 * 86400000);
@@ -129,6 +132,8 @@ router.get('/stats', async (req, res, next) => {
       unreadSupport: (unreadSupport[0] && unreadSupport[0].n) || 0,
       pendingDeleteRequests: pendingDeletes,
       openIssues,
+      unassigned: { searchingNow, expiredToday },
+      driversWithPendingDocs: docsPending,
       week,
     });
   } catch (e) { next(e); }
@@ -138,19 +143,26 @@ router.get('/stats', async (req, res, next) => {
 
 const STATUS_GROUPS = {
   active: ['CREATED', 'SEARCHING_DRIVER', 'DRIVER_ASSIGNED', 'DRIVER_ON_THE_WAY', 'DRIVER_HEADING_TO_CUSTOMER', 'DRIVER_ARRIVED', 'TRIP_STARTED', 'QUEUED', 'DRIVER_FINISHING_CURRENT_TRIP', 'WAITING_FOR_ADMIN', 'DISPUTED'],
+  // Sürücüsü olmayan: hələ axtarılır və ya heç kim tapılmayıb (ofis əl ilə təyin edə bilər)
+  unassigned: ['SEARCHING_DRIVER', 'EXPIRED'],
   completed: ['COMPLETED', 'TRIP_COMPLETED', 'RATING_PENDING'],
   cancelled: ['CUSTOMER_CANCELLED', 'DRIVER_CANCELLED', 'ADMIN_CANCELLED', 'EXPIRED'],
 };
 
+const escRx = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 /**
- * Sifarişlər: ?group=active|completed|cancelled | ?status=, ?driverId=, ?from=&to= (ISO), ?q= (sifariş id),
- * ?page=&limit=. Regional admin yalnız öz şəhərinin sürücülərinin sifarişlərini görür.
+ * Sifarişlər: ?group=active|unassigned|completed|cancelled | ?status=, ?driverId=, ?customerId=, ?from=&to= (ISO),
+ * ?q= sifariş ID / müştəri və ya sürücü telefonu / adı, ?page=&limit=.
+ * Regional admin: öz şəhərinin sürücülərinin sifarişləri + götürmə nöqtəsi öz şəhərində olanlar.
  */
 router.get('/orders', async (req, res, next) => {
   try {
+    const and = [];
     const q = {};
     if (req.query.group && STATUS_GROUPS[req.query.group]) q.status = { $in: STATUS_GROUPS[req.query.group] };
     else if (req.query.status) q.status = String(req.query.status);
+    if (req.query.group === 'unassigned') q.driverId = null;
     // Silinmiş (yumşaq) sifarişlər standart olaraq göstərilmir: ?includeDeleted=1 ilə görünür
     if (req.query.includeDeleted !== '1') q.deletedAt = null;
     if (req.query.from || req.query.to) {
@@ -161,17 +173,34 @@ router.get('/orders', async (req, res, next) => {
       if (!Number.isNaN(t.getTime())) q.createdAt.$lte = t;
     }
     if (req.query.q) {
-      const id = views.oid(String(req.query.q).trim());
+      const text = String(req.query.q).trim().slice(0, 60);
+      const id = views.oid(text);
       if (id) q._id = id;
+      else if (text.length >= 2) {
+        const rx = new RegExp(escRx(text), 'i');
+        const phone = normalizePhone(text);
+        const users = await User.find({
+          role: { $in: ['CUSTOMER', 'DRIVER'] },
+          $or: [{ firstName: rx }, { lastName: rx }, { username: rx }, { phone: rx }, ...(phone ? [{ phone }] : [])],
+        }).select('_id').limit(500).lean();
+        const uids = users.map((u) => u._id);
+        const [cust, drv] = await Promise.all([
+          Customer.find({ userId: { $in: uids } }).distinct('_id'),
+          Driver.find({ userId: { $in: uids } }).distinct('_id'),
+        ]);
+        and.push({ $or: [{ customerId: { $in: cust } }, { driverId: { $in: drv } }, { 'passenger.phone': rx }, { 'passenger.name': rx }] });
+      }
     }
+    if (req.query.customerId) q.customerId = views.oid(req.query.customerId);
     if (req.query.driverId) {
       q.driverId = (await loadDriverInScope(req, req.query.driverId, { allowDeleted: true }))._id;
-    } else {
-      // Regional admin: yalnız öz şəhərinin sürücülərinə təyin olunmuş sifarişlər
-      const ids = await scopedDriverIds(req);
-      if (ids) q.driverId = { $in: ids };
-      else if (req.query.cityId) q.driverId = { $in: await Driver.find(driverFilter(req)).distinct('_id') };
+    } else if (scopeOf(req).isSuper && req.query.cityId) {
+      const cid = views.oid(req.query.cityId);
+      and.push({ $or: [{ cityId: cid }, { driverId: { $in: await Driver.find(driverFilter(req)).distinct('_id') } }] });
     }
+    const scope = await scopedOrderFilter(req);
+    if (scope) and.push(scope);
+    if (and.length) q.$and = and;
     const { skip, limit, page } = views.paging(req.query);
     const [orders, total] = await Promise.all([
       Order.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
@@ -349,6 +378,7 @@ router.get('/drivers/:id/overview', async (req, res, next) => {
       ratings: ratings.map((r) => ({ ...r, customer: customers.get(String(r.customerId)) || null })),
       transactions,
       deleteRequest,
+      documents: (await require('../services/document.service').listForDriver(d._id)).summary,
     });
   } catch (e) { next(e); }
 });
@@ -740,6 +770,8 @@ const cityBody = {
   officeAddress: Joi.string().allow('').max(300),
   officePhone: Joi.string().allow('').max(30),
   workHours: Joi.string().allow('').max(120),
+  center: Joi.object({ lat: Joi.number().min(38).max(42.5).allow(null), lng: Joi.number().min(44).max(51).allow(null) }),
+  radiusKm: Joi.number().min(5).max(200),
 };
 
 router.post('/cities', requireSuperAdmin, validated(Joi.object({ ...cityBody, name: cityBody.name.required() })), async (req, res, next) => {
@@ -764,6 +796,7 @@ router.patch('/cities/:id', validated(Joi.object(cityBody)), async (req, res, ne
     const allowed = isSuper ? Object.keys(cityBody) : ['officeAddress', 'officePhone', 'workHours'];
     for (const k of allowed) if (req.body[k] !== undefined) city.set(k, req.body[k]);
     await city.save();
+    cityService.invalidateCenters();
     await audit(req, 'CITY_UPDATE', 'City', city._id, old, city.toObject());
     ok(res, { city });
   } catch (e) {
@@ -853,11 +886,7 @@ router.patch(
   }
 );
 
-// ---- Sərnişinlər, şikayətlər ----
-router.get('/customers', requireSuperAdmin, async (req, res) => {
-  const customers = await Customer.find().populate('userId').limit(100);
-  ok(res, { customers });
-});
+// ---- Sərnişinlər: admin.extra.routes.js ----
 
 // ---- Müştəri rəyləri (reytinq və şikayət) — regional admin öz şəhərinin sürücüləri üzrə ----
 
@@ -995,5 +1024,8 @@ router.patch('/settings', requireSuperAdmin, async (req, res, next) => {
     ok(res, { settings: await getSettings() });
   } catch (e) { next(e); }
 });
+
+// Əlavə bölmələr: sənədlər, namizəd sürücülər, sərnişinlər, canlı xəritə, hesabatlar, jurnal
+router.use(require('./admin.extra.routes'));
 
 module.exports = router;

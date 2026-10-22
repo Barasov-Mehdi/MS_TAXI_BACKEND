@@ -13,6 +13,18 @@ const { publicUser } = require('../services/auth.service');
 const chatService = require('../services/chat.service');
 const cityService = require('../services/city.service');
 const supportService = require('../services/support.service');
+const documentService = require('../services/document.service');
+const realtime = require('../websocket/emitter');
+const multer = require('multer');
+
+// Sənəd şəkli yaddaşda saxlanır (diskə yazılmır), sonra GridFS-ə ötürülür
+const uploadImage = multer({ storage: multer.memoryStorage(), limits: { fileSize: documentService.MAX_BYTES, files: 1 } }).single('file');
+const withUpload = (req, res, next) =>
+  uploadImage(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') return next(new AppError('FILE_TOO_LARGE', 'Şəkil ən çox 8 MB ola bilər', 413));
+    return next(new AppError('VALIDATION_ERROR', 'Fayl yüklənmədi', 400));
+  });
 
 router.use(authenticate, requireRoles('DRIVER'));
 
@@ -93,6 +105,7 @@ router.get('/me', async (req, res, next) => {
       // Şəhər + ofis məlumatı ("Ofislə əlaqə" bölməsi). null → sürücü şəhər seçməlidir.
       city: cityService.publicCity(await cityService.getCity(req.driver.cityId)),
       supportUnread: await supportService.unreadForDriver(req.driver._id),
+      documents: (await documentService.listForDriver(req.driver._id)).summary,
     });
   } catch (e) { next(e); }
 });
@@ -145,6 +158,38 @@ router.patch('/me/city', async (req, res, next) => {
 router.get('/cities', async (req, res, next) => {
   try {
     ok(res, { cities: await cityService.listActive() });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------- Sənədlər (vəsiqə, sürücülük vəsiqəsi, texpasport)
+
+router.get('/documents', async (req, res, next) => {
+  try {
+    ok(res, await documentService.listForDriver(req.driver._id));
+  } catch (e) { next(e); }
+});
+
+/** multipart/form-data, sahə: file (şəkil). Eyni növ yenidən yüklənəndə köhnəsi əvəz olunur. */
+router.post('/documents/:type', withUpload, async (req, res, next) => {
+  try {
+    const doc = await documentService.upload(req.driver._id, req.params.type, req.file);
+    const list = await documentService.listForDriver(req.driver._id);
+    realtime.toAdminCity(req.driver.cityId, 'document_uploaded', {
+      driverId: req.driver._id,
+      type: doc.type,
+      label: doc.label,
+      summary: list.summary,
+    });
+    ok(res, { document: doc, ...list }, {}, 201);
+  } catch (e) { next(e); }
+});
+
+router.get('/documents/:type/file', async (req, res, next) => {
+  try {
+    const { DriverDocument } = require('../models');
+    const doc = await DriverDocument.findOne({ driverId: req.driver._id, type: String(req.params.type) });
+    if (!doc) throw new AppError('NOT_FOUND', 'Sənəd tapılmadı', 404);
+    await documentService.streamFile(doc, res);
   } catch (e) { next(e); }
 });
 
