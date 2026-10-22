@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const cityService = require('./city.service');
 const jwt = require('jsonwebtoken');
 const { User, Customer, Driver, RefreshToken } = require('../models');
 const config = require('../config');
@@ -28,7 +29,7 @@ async function issueRefresh(user) {
   return raw;
 }
 
-async function register({ role, phone, password, firstName, lastName, email, code }) {
+async function register({ role, phone, password, firstName, lastName, email, code, cityId }) {
   if (!['CUSTOMER', 'DRIVER'].includes(role)) {
     throw new AppError('INVALID_ROLE', 'Role must be CUSTOMER or DRIVER', 400);
   }
@@ -37,6 +38,10 @@ async function register({ role, phone, password, firstName, lastName, email, cod
   phone = normalized;
   const exists = await User.findOne({ phone });
   if (exists) throw new AppError('PHONE_TAKEN', 'Phone already registered', 409);
+  // Sürücü öz şəhərini seçməlidir: regional ofis/admin onu buna görə idarə edir.
+  // (SMS kodundan ƏVVƏL yoxlanılır ki, səhv şəhər seçimi kodu "yandırmasın".)
+  let city = null;
+  if (role === 'DRIVER') city = await cityService.requireActiveCity(cityId);
   // Nömrə SMS kodu ilə təsdiqlənməlidir (kod /auth/register/otp ilə göndərilir; təkistifadəlikdir).
   await otpService.verifyOtp(phone, String(code || ''), 'register');
   const passwordHash = await User.hashPassword(password);
@@ -48,7 +53,7 @@ async function register({ role, phone, password, firstName, lastName, email, cod
     throw e;
   }
   if (role === 'CUSTOMER') await Customer.create({ userId: user._id });
-  if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false });
+  if (role === 'DRIVER') await Driver.create({ userId: user._id, isVerified: false, cityId: city._id });
   return user;
 }
 
@@ -243,6 +248,8 @@ function publicUser(user) {
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
+    // Admin paneli üçün: null → baş admin, dolu → regional admin (yalnız bu şəhər)
+    ...(user.role === 'ADMIN' ? { adminCityId: user.adminCityId || null, isSuperAdmin: !user.adminCityId } : {}),
   };
 }
 

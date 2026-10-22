@@ -670,7 +670,7 @@ async function stopTrip({ orderId, driver, user, reason, latitude, longitude, do
       `Sürücünün bu gün dayandırdığı səfər sayı: ${stopsToday}.` +
       (newOrder ? ` Sərnişin üçün yeni sifariş: ${newOrder._id}` : ''),
   }).catch((e) => console.error('[stopTrip] issue create failed', e && e.message));
-  realtime.toAdmin('trip_stopped', {
+  realtime.toAdminCity(driver.cityId, 'trip_stopped', {
     orderId: order._id,
     driverId: driver._id,
     reason: cleanReason,

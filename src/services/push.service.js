@@ -170,6 +170,18 @@ function notifyChatMessage(driverId, { orderId, messageId, senderName, text }) {
   });
 }
 
+/** Ofisdən (admin) sürücüyə mesaj. */
+function notifySupportMessage(driverId, { messageId, adminName, text }) {
+  return sendNotification(driverId, {
+    title: adminName ? `Ofis • ${clip(adminName, 30)}` : 'Ofisdən mesaj',
+    body: text,
+    type: 'support_message',
+    channel: 'chat',
+    tag: 'support',
+    data: { messageId },
+  });
+}
+
 /** Sifariş ləğv olundu (sərnişin və ya admin tərəfindən). */
 function notifyOrderCancelled(driverId, orderId, by) {
   const byAdmin = by === 'ADMIN';
@@ -300,6 +312,7 @@ module.exports = {
   sendToDriver,
   sendNotification,
   notifyChatMessage,
+  notifySupportMessage,
   notifyOrderCancelled,
   notifyQueuedOrder,
   notifyOrderAssigned,

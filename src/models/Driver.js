@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const driverSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
+    // Sürücünün şəhəri (qeydiyyatda seçilir). Regional admin yalnız öz şəhərinin sürücülərini idarə edir.
+    cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null, index: true },
     vehicleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', default: null },
     isOnline: { type: Boolean, default: false, index: true },
     isVerified: { type: Boolean, default: false, index: true },

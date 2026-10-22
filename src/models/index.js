@@ -19,4 +19,7 @@ module.exports = {
   Notification: require('./Notification'),
   AuditLog: require('./AuditLog'),
   TripEarning: require('./TripEarning'),
+  City: require('./City'),
+  SupportThread: require('./SupportThread'),
+  SupportMessage: require('./SupportMessage'),
 };

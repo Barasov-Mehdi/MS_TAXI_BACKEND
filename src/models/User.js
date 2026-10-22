@@ -18,6 +18,8 @@ const userSchema = new mongoose.Schema(
     lastName: { type: String, default: '' },
     avatarUrl: { type: String, default: null },
     isActive: { type: Boolean, default: true, index: true },
+    // Yalnız ADMIN üçün: null → baş admin (bütün şəhərlər); dolu → regional admin (yalnız bu şəhər).
+    adminCityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null },
     passwordResetCode: { type: String, default: null },
     passwordResetExpiresAt: { type: Date, default: null },
   },

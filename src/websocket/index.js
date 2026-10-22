@@ -62,7 +62,11 @@ function attachWebsocket(httpServer) {
           if (pending) socket.emit('new_order', pending);
         }
       }
-      if (user.role === 'ADMIN') socket.join('admin:operations');
+      if (user.role === 'ADMIN') {
+        // Baş admin bütün hadisələri, regional admin yalnız öz şəhərininkiləri alır
+        if (user.adminCityId) socket.join(`admin:city:${user.adminCityId}`);
+        else socket.join('admin:operations');
+      }
     } catch (e) {
       console.error('[ws] connection setup failed', e);
     }

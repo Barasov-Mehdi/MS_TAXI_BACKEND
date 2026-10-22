@@ -97,6 +97,8 @@ router.post(
     firstName: Joi.string().allow(''),
     lastName: Joi.string().allow(''),
     email: Joi.string().email().allow(null, ''),
+    // Sürücü üçün məcburidir (servis yoxlayır), sərnişin üçün nəzərə alınmır
+    cityId: Joi.string().hex().length(24).allow(null, ''),
   })),
   async (req, res, next) => {
     try {
@@ -117,6 +119,13 @@ router.post(
     } catch (e) { next(e); }
   }
 );
+
+/** Qeydiyyat formasında şəhər siyahısı (açıq endpoint). */
+router.get('/cities', async (req, res, next) => {
+  try {
+    ok(res, { cities: await require('../services/city.service').listActive() });
+  } catch (e) { next(e); }
+});
 
 router.post('/refresh', async (req, res, next) => {
   try {

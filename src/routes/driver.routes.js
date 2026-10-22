@@ -11,6 +11,8 @@ const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver, T
 const { OrderStatus } = require('../utils/orderStatus');
 const { publicUser } = require('../services/auth.service');
 const chatService = require('../services/chat.service');
+const cityService = require('../services/city.service');
+const supportService = require('../services/support.service');
 
 router.use(authenticate, requireRoles('DRIVER'));
 
@@ -88,6 +90,9 @@ router.get('/me', async (req, res, next) => {
       driver,
       vehicle: await loadVehicle(req.driver),
       limits: lim,
+      // Şəhər + ofis məlumatı ("Ofislə əlaqə" bölməsi). null → sürücü şəhər seçməlidir.
+      city: cityService.publicCity(await cityService.getCity(req.driver.cityId)),
+      supportUnread: await supportService.unreadForDriver(req.driver._id),
     });
   } catch (e) { next(e); }
 });
@@ -121,6 +126,57 @@ router.patch(
     } catch (e) { next(e); }
   }
 );
+
+/**
+ * Şəhəri seç. Yalnız şəhəri olmayan (köhnə) sürücülər üçün: sonradan dəyişmək yalnız baş admin vasitəsilə.
+ * (Əks halda sürücü bir regional ofisdən qaçıb başqasına keçə bilərdi.)
+ */
+router.patch('/me/city', async (req, res, next) => {
+  try {
+    if (req.driver.cityId) throw new AppError('CITY_LOCKED', 'Şəhəri dəyişmək üçün ofislə əlaqə saxlayın', 409);
+    const city = await cityService.requireActiveCity(req.body && req.body.cityId);
+    const r = await Driver.updateOne({ _id: req.driver._id, cityId: null }, { $set: { cityId: city._id } });
+    if (!r.modifiedCount) throw new AppError('CITY_LOCKED', 'Şəhəri dəyişmək üçün ofislə əlaqə saxlayın', 409);
+    ok(res, { city: cityService.publicCity(city) });
+  } catch (e) { next(e); }
+});
+
+/** Aktiv şəhərlər (köhnə sürücünün şəhər seçimi üçün). */
+router.get('/cities', async (req, res, next) => {
+  try {
+    ok(res, { cities: await cityService.listActive() });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------- Ofislə yazışma (admin)
+
+router.get('/support', async (req, res, next) => {
+  try {
+    const page = await supportService.listMessages(req.driver._id, { before: req.query.before, limit: req.query.limit });
+    ok(res, {
+      ...page,
+      city: cityService.publicCity(await cityService.getCity(req.driver.cityId)),
+      unread: await supportService.unreadForDriver(req.driver._id),
+    });
+  } catch (e) { next(e); }
+});
+
+router.post(
+  '/support/messages',
+  validated(Joi.object({ text: Joi.string().trim().min(1).max(supportService.MAX_LEN).required() })),
+  async (req, res, next) => {
+    try {
+      ok(res, { message: await supportService.sendFromDriver(req.driver, req.body.text) }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+router.post('/support/read', async (req, res, next) => {
+  try {
+    await supportService.markReadByDriver(req.driver._id);
+    ok(res, { unread: 0 });
+  } catch (e) { next(e); }
+});
 
 router.post('/online', async (req, res, next) => {
   try {
