@@ -10,7 +10,12 @@ async function authenticate(req, res, next) {
     if (!token) throw new AppError('UNAUTHORIZED', 'Missing token', 401);
     const payload = jwt.verify(token, config.jwt.accessSecret);
     const user = await User.findById(payload.sub);
-    if (!user || !user.isActive) throw new AppError('UNAUTHORIZED', 'Invalid token', 401);
+    if (!user) throw new AppError('UNAUTHORIZED', 'Invalid token', 401);
+    if (!user.isActive) {
+      // Sərnişin tətbiqi bu kodu tanıyır və "hesab bloklanıb" izahını göstərir
+      if (user.role === 'CUSTOMER') throw new AppError('USER_DISABLED', 'Hesab deaktiv edilib', 403);
+      throw new AppError('UNAUTHORIZED', 'Invalid token', 401);
+    }
     req.user = user;
     if (user.role === 'CUSTOMER') {
       req.customer = await Customer.findOne({ userId: user._id });

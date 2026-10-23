@@ -102,7 +102,7 @@ async function updateDriverLocation(driver, payload) {
         timestamp: ts,
       });
       realtime.toOrder(order._id, 'driver_location_updated', {
-        latitude, longitude, heading, speed, timestamp: ts,
+        orderId: order._id, latitude, longitude, heading, speed, timestamp: ts,
       });
     }
     const dist = await matchingService.distanceToCurrentDestination(driver);

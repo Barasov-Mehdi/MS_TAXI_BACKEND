@@ -775,7 +775,8 @@ async function cancelOrder({ order, user, role, reason }) {
       fireAndForget(pushService.sendOfferEnded(before.currentOfferDriverId, order._id, 'CANCELLED'));
     }
     realtime.toOrder(order._id, 'order_cancelled', payload);
-    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id });
+    // status + səbəb də ötürülür (köhnə tətbiqlər yalnız orderId oxuyur — geriyə uyğundur)
+    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id, status: to, reason });
     return Order.findById(order._id);
   }
 
@@ -812,7 +813,7 @@ async function cancelOrder({ order, user, role, reason }) {
       // Sürücü özü ləğv edibsə bildiriş lazım deyil; sərnişin / admin ləğv edəndə telefona bildiriş gedir.
       if (role !== 'DRIVER') fireAndForget(pushService.notifyOrderCancelled(order.driverId, order._id, role));
     }
-    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id });
+    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id, status: to, reason });
     return order;
   } catch (e) {
     await session.abortTransaction();

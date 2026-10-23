@@ -25,6 +25,7 @@ function validated(schema) {
 }
 
 const COMPLAINT_CATEGORIES = ['DRIVER_BEHAVIOR', 'VEHICLE_PROBLEM', 'PAYMENT', 'WRONG_ROUTE', 'SAFETY', 'OTHER'];
+const CUSTOMER_LANGUAGES = ['az', 'ru', 'en', 'tr'];
 
 router.use(authenticate, requireRoles('CUSTOMER'));
 
@@ -42,8 +43,14 @@ router.get('/me', async (req, res) => {
 // Ad, soyad, istifadəçi adı və email sonradan əlavə oluna bilər. İstifadəçi adı boş qala bilməz.
 router.patch('/me', async (req, res, next) => {
   try {
-    const { firstName, lastName, username, email } = req.body;
+    const { firstName, lastName, username, email, language } = req.body;
     const user = req.user;
+
+    // Tətbiqin dili (push bildirişləri üçün). Yanlış dəyər səssizcə nəzərə alınmır.
+    if (language !== undefined && CUSTOMER_LANGUAGES.includes(String(language))) {
+      req.customer.language = String(language);
+      await req.customer.save();
+    }
 
     if (firstName != null) user.firstName = String(firstName).trim().slice(0, 50);
     if (lastName != null) user.lastName = String(lastName).trim().slice(0, 50);
@@ -83,7 +90,7 @@ router.patch('/me', async (req, res, next) => {
       if (e && e.code === 11000) throw new AppError('USERNAME_TAKEN', 'Bu istifadəçi adı artıq tutulub', 409);
       throw e;
     }
-    ok(res, { user: authService.publicUser(user) });
+    ok(res, { user: authService.publicUser(user), customer: req.customer });
   } catch (e) { next(e); }
 });
 
@@ -197,7 +204,7 @@ router.post('/orders', async (req, res, next) => {
 
 router.get('/orders', async (req, res, next) => {
   try {
-    const rows = await Order.find({ customerId: req.customer._id }).sort({ createdAt: -1 }).limit(50);
+    const rows = await Order.find({ customerId: req.customer._id, deletedAt: null }).sort({ createdAt: -1 }).limit(50);
 
     // Tarixçə üçün: hər sifarişə sürücü məlumatı və müştərinin verdiyi ulduz əlavə olunur.
     const driverIds = [...new Set(rows.map((o) => o.driverId && String(o.driverId)).filter(Boolean))];
@@ -279,6 +286,7 @@ router.get('/orders/active', async (req, res, next) => {
     ];
     const live = await Order.findOne({
       customerId: req.customer._id,
+      deletedAt: null,
       status: { $nin: [...inactive, ...waiting] },
     }).sort({ createdAt: -1 });
     if (live) {
@@ -287,6 +295,7 @@ router.get('/orders/active', async (req, res, next) => {
 
     const pending = await Order.findOne({
       customerId: req.customer._id,
+      deletedAt: null,
       status: { $in: waiting },
       driverId: { $ne: null },
     }).sort({ completedAt: -1, createdAt: -1 });

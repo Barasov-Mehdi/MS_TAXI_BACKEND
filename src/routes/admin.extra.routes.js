@@ -288,6 +288,12 @@ router.post(
       user.isActive = false;
       await user.save();
       await RefreshToken.deleteMany({ userId: user._id }).catch(() => {});
+      // Açıq tətbiq dərhal xəbər tutsun: hadisə + bağlantıların qırılması
+      realtime.toCustomer(c._id, 'account_blocked', { reason: req.body.reason });
+      if (realtime.disconnectRoom) {
+        const room = `customer:${c._id}`;
+        setTimeout(() => realtime.disconnectRoom(room), 1000).unref();
+      }
       await audit(req, 'CUSTOMER_BLOCK', 'Customer', c._id, true, false, req.body.reason);
       ok(res, { blocked: true });
     } catch (e) { next(e); }
