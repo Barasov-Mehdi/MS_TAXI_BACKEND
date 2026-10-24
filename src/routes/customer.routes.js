@@ -8,12 +8,13 @@ const { parseUsername } = require('../utils/validators');
 const pricingService = require('../services/pricing.service');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
-const { Order, Complaint, OrderIssue, User, Driver, Rating } = require('../models');
+const { Order, Complaint, OrderIssue, User, Driver, Rating, Vehicle } = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const adminFeed = require('../websocket/adminFeed');
 const Joi = require('joi');
 const promoService = require('../services/promo.service');
 const cityService = require('../services/city.service');
+const customerSupport = require('../services/customerSupport.service');
 
 function validated(schema) {
   return (req, res, next) => {
@@ -36,8 +37,51 @@ router.param('id', (req, res, next, id) => {
   return next();
 });
 
-router.get('/me', async (req, res) => {
-  ok(res, { user: authService.publicUser(req.user), customer: req.customer });
+router.get('/me', async (req, res, next) => {
+  try {
+    ok(res, {
+      user: authService.publicUser(req.user),
+      customer: req.customer,
+      // Ofisdən oxunmamış mesaj sayı ("Dəstək" bölməsindəki nişan)
+      supportUnread: await customerSupport.unreadForCustomer(req.customer._id),
+    });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------- Ofislə yazışma (dəstək)
+
+router.get('/support', async (req, res, next) => {
+  try {
+    const page = await customerSupport.listMessages(req.customer._id, { before: req.query.before, limit: req.query.limit });
+    ok(res, { ...page, unread: await customerSupport.unreadForCustomer(req.customer._id) });
+  } catch (e) { next(e); }
+});
+
+router.post(
+  '/support/messages',
+  validated(Joi.object({
+    text: Joi.string().trim().min(1).max(customerSupport.MAX_LEN).required().messages({ 'string.empty': 'Mesaj boş ola bilməz' }),
+    clientMessageId: Joi.string().trim().max(64).allow(null, ''),
+    lat: Joi.number().min(-90).max(90).allow(null),
+    lng: Joi.number().min(-180).max(180).allow(null),
+  })),
+  async (req, res, next) => {
+    try {
+      const message = await customerSupport.sendFromCustomer(req.customer, req.body.text, {
+        lat: req.body.lat,
+        lng: req.body.lng,
+        clientMessageId: req.body.clientMessageId || null,
+      });
+      ok(res, { message }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+router.post('/support/read', async (req, res, next) => {
+  try {
+    await customerSupport.markReadByCustomer(req.customer._id);
+    ok(res, { unread: 0 });
+  } catch (e) { next(e); }
 });
 
 // Ad, soyad, istifadəçi adı və email sonradan əlavə oluna bilər. İstifadəçi adı boş qala bilməz.
@@ -256,19 +300,33 @@ router.get('/orders', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Sərnişinə göstərilən sürücü + avtomobil.
+ * Avtomobil Driver.vehicleId-də deyilsə (köhnə qeydiyyat / admin əlavə edib, bağlantı qurulmayıb)
+ * Vehicle.driverId ilə tapılır — əvvəl bu halda səfər ekranında maşın məlumatı ümumiyyətlə görünmürdü.
+ */
 async function publicDriver(order) {
   if (!order || !order.driverId) return null;
   const d = await Driver.findById(order.driverId).populate('vehicleId');
   const u = d ? await User.findById(d.userId) : null;
-  return d && u ? {
+  if (!d || !u) return null;
+  let v = d.vehicleId && d.vehicleId.plateNumber !== undefined ? d.vehicleId : null;
+  if (!v) {
+    v = await Vehicle.findOne({ driverId: d._id }).sort({ isActive: -1, updatedAt: -1 }).lean();
+    // Bağlantını bərpa et ki, növbəti dəfə birbaşa tapılsın
+    if (v) Driver.updateOne({ _id: d._id, vehicleId: null }, { $set: { vehicleId: v._id } }).catch(() => {});
+  }
+  return {
     id: d._id,
     firstName: u.firstName,
     lastName: u.lastName,
     phone: u.phone,
     ratingAvg: d.ratingAvg,
     location: d.location,
-    vehicle: d.vehicleId,
-  } : null;
+    vehicle: v
+      ? { make: v.make || '', model: v.model || '', color: v.color || '', plateNumber: v.plateNumber || '', year: v.year || null, seats: v.seats || null }
+      : null,
+  };
 }
 
 // Aktiv sifariş. Aktiv səfər yoxdursa, sürücüyə hələ ulduz verilməmiş bitmiş səfər

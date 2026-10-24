@@ -13,6 +13,7 @@ const walletService = require('../services/wallet.service');
 const pushService = require('../services/push.service');
 const dispatchService = require('../services/dispatch.service');
 const supportService = require('../services/support.service');
+const customerSupportService = require('../services/customerSupport.service');
 const newsService = require('../services/news.service');
 const appVersion = require('../services/appVersion.service');
 const cityService = require('../services/city.service');
@@ -133,6 +134,7 @@ router.get('/stats', async (req, res, next) => {
       orders: { today: ordersToday, completedToday, cancelledToday, activeNow },
       money: { grossToday: (earnToday[0] && earnToday[0].gross) || 0, commissionToday: (earnToday[0] && earnToday[0].commission) || 0 },
       unreadSupport: (unreadSupport[0] && unreadSupport[0].n) || 0,
+      unreadCustomerSupport: await customerSupportService.unreadForAdmin(scopeOf(req)).catch(() => 0),
       pendingDeleteRequests: pendingDeletes,
       openIssues,
       unassigned: { searchingNow, expiredToday },
@@ -607,6 +609,45 @@ router.post(
     } catch (e) { next(e); }
   }
 );
+
+// =============================================================== Ofis ↔ sərnişin yazışması
+
+router.get('/customer-support/threads', async (req, res, next) => {
+  try {
+    const threads = await customerSupportService.listThreads(scopeOf(req), {
+      cityId: req.query.cityId,
+      unreadOnly: req.query.unread === '1',
+      limit: req.query.limit,
+    });
+    ok(res, { threads, unreadTotal: threads.reduce((n, t) => n + (t.unreadForAdmin || 0), 0) });
+  } catch (e) { next(e); }
+});
+
+router.get('/customer-support/:customerId/messages', async (req, res, next) => {
+  try {
+    const c = await customerSupportService.loadCustomerInScope(scopeOf(req), req.params.customerId);
+    ok(res, await customerSupportService.listMessages(c._id, { before: req.query.before, limit: req.query.limit }));
+  } catch (e) { next(e); }
+});
+
+router.post(
+  '/customer-support/:customerId/messages',
+  validated(Joi.object({ text: Joi.string().trim().min(1).max(customerSupportService.MAX_LEN).required() })),
+  async (req, res, next) => {
+    try {
+      const c = await customerSupportService.loadCustomerInScope(scopeOf(req), req.params.customerId);
+      ok(res, { message: await customerSupportService.sendFromAdmin(req.user, scopeOf(req), c, req.body.text) }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+router.post('/customer-support/:customerId/read', async (req, res, next) => {
+  try {
+    const c = await customerSupportService.loadCustomerInScope(scopeOf(req), req.params.customerId);
+    await customerSupportService.markReadByAdmin(c._id);
+    ok(res, { unread: 0 });
+  } catch (e) { next(e); }
+});
 
 // =============================================================== Balans
 

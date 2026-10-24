@@ -122,7 +122,9 @@ async function driverLine(order, lang) {
   if (!d) return { name: fallback, car: '' };
   const [u, v] = await Promise.all([
     User.findById(d.userId).select('firstName').lean(),
-    d.vehicleId ? Vehicle.findById(d.vehicleId).select('make model color plateNumber').lean() : null,
+    d.vehicleId
+      ? Vehicle.findById(d.vehicleId).select('make model color plateNumber').lean()
+      : Vehicle.findOne({ driverId: d._id }).select('make model color plateNumber').lean(),
   ]);
   const car = v ? [[v.color, v.make, v.model].filter(Boolean).join(' '), v.plateNumber].filter(Boolean).join(' · ') : '';
   return { name: (u && u.firstName) || fallback, car };

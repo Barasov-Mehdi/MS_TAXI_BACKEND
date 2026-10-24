@@ -25,4 +25,6 @@ module.exports = {
   DriverDeleteRequest: require('./DriverDeleteRequest'),
   DriverDocument: require('./DriverDocument'),
   News: require('./News'),
+  CustomerSupportThread: require('./CustomerSupportThread'),
+  CustomerSupportMessage: require('./CustomerSupportMessage'),
 };

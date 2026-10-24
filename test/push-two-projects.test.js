@@ -52,3 +52,12 @@ test('sərnişin testi: köhnə açar rədd edir, sürücü layihəsinin açarı
   const r = await push.testCustomer('c1');
   expect(r).toMatchObject({ sent: true, viaProjectId: 'barasdrivers-f3fba' });
 });
+
+test('sərnişin bildirişi: növə görə ayrıca kanal, səs və ikon', async () => {
+  const models = require('../src/models');
+  models.Customer.findById = () => ({ select: () => ({ lean: async () => ({ _id: 'c1', fcmToken: 'tok-c' }) }) });
+  mockSends['push_baras-11bbd'].mockResolvedValue('ok');
+  await push.sendToCustomer('c1', { title: 'Sürücü çatdı', body: 'B', type: 'driver_arrived', channel: 'trip' });
+  const n = mockSends['push_baras-11bbd'].mock.calls[0][0].android.notification;
+  expect(n).toMatchObject({ channelId: 'c_driver_arrived', sound: 'snd_driver_arrived', icon: 'ic_notif_pin' });
+});

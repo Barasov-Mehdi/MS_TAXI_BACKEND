@@ -252,6 +252,41 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
  * Sərnişin tətbiqinə bildiriş (MS Taxi). Kanallar müştəri tətbiqində (MainApplication.kt) yaradılır:
  * trip_updates, chat_messages. Toxunanda tətbiq açılır (data.type / orderId ilə).
  */
+/**
+ * Sərnişin tətbiqinin bildiriş görünüşü — hər növün öz KANALI (= öz səsi), ikonu və rəngi.
+ * Kanallar və səslər sərnişin tətbiqində yaradılır: android/.../push/PushChannels.kt, res/raw/snd_*.ogg,
+ * ikonlar res/drawable/ic_notif_*.xml. Köhnə tətbiq versiyasında kanal/ikon yoxdursa Android standartı (trip_updates) işlədir.
+ *   sound: Android 7 və aşağı üçün (8+ səsi kanal təyin edir)
+ */
+const CUSTOMER_STYLE = {
+  driver_assigned: { channelId: 'c_driver_found', sound: 'snd_driver_found', icon: 'ic_notif_car', color: '#00B14F' },
+  driver_arrived: { channelId: 'c_driver_arrived', sound: 'snd_driver_arrived', icon: 'ic_notif_pin', color: '#00B14F' },
+  trip_started: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_notif_route', color: '#1D5FD1' },
+  searching: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_notif_search', color: '#B26A00' },
+  trip_stopped: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_notif_route', color: '#B26A00' },
+  trip_completed: { channelId: 'c_trip_done', sound: 'snd_trip_done', icon: 'ic_notif_check', color: '#00B14F' },
+  no_driver: { channelId: 'c_trip_cancelled', sound: 'snd_cancelled', icon: 'ic_notif_cancel', color: '#D93025' },
+  order_cancelled: { channelId: 'c_trip_cancelled', sound: 'snd_cancelled', icon: 'ic_notif_cancel', color: '#D93025' },
+  chat_message: { channelId: 'c_chat', sound: 'snd_message_in', icon: 'ic_notif_chat', color: '#00B14F' },
+  support_message: { channelId: 'c_support', sound: 'snd_support', icon: 'ic_notif_support', color: '#6D3FD6' },
+  test: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_stat_notify', color: '#00B14F' },
+};
+const CUSTOMER_DEFAULT_STYLE = { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_stat_notify', color: '#00B14F' };
+
+function customerAndroidNotification(type, tag) {
+  const st = CUSTOMER_STYLE[type] || CUSTOMER_DEFAULT_STYLE;
+  return {
+    channelId: st.channelId,
+    sound: st.sound,
+    icon: st.icon,
+    color: st.color,
+    defaultVibrateTimings: true,
+    ...(tag ? { tag: String(tag).slice(0, 100) } : {}),
+  };
+}
+
+// `channel` köhnə çağırışlarla uyğunluq üçün qəbul olunur; görünüş `type`-a görə seçilir.
+// eslint-disable-next-line no-unused-vars
 async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000 }) {
   const m = init('customer');
   if (!m || !customerId) return false;
@@ -267,12 +302,7 @@ async function sendToCustomer(customerId, { title, body, type, channel = 'trip',
       android: {
         priority: 'high',
         ttl: Math.max(1000, ttlMs),
-        notification: {
-          channelId: CHANNEL[channel] || CHANNEL.trip,
-          sound: 'default',
-          defaultVibrateTimings: true,
-          ...(tag ? { tag: String(tag).slice(0, 100) } : {}),
-        },
+        notification: customerAndroidNotification(type, tag),
       },
     });
     noteResult('customer');
@@ -561,7 +591,7 @@ async function testCustomer(customerId) {
     token: c.fcmToken,
     notification: { title: 'Test bildirişi ✔', body: 'Baras: bildirişlər işləyir.' },
     data: { type: 'test' },
-    android: { priority: 'high', ttl: 120000, notification: { channelId: CHANNEL.trip, sound: 'default', tag: 'push_test' } },
+    android: { priority: 'high', ttl: 120000, notification: customerAndroidNotification('test', 'push_test') },
   };
   try {
     await m.send(message);
@@ -612,6 +642,7 @@ module.exports = {
   notifyNews,
   notifyAppUpdate,
   sendToCustomer,
+  CUSTOMER_STYLE,
   CHANNEL,
   CLICK_ACTION,
 };
