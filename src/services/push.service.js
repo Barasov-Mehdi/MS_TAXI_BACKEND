@@ -19,9 +19,6 @@
  */
 const { Driver, Customer } = require('../models');
 
-let messaging = null;
-let initTried = false;
-
 /**
  * Açar dəyərini JSON obyektinə çevirir. Qəbul olunan formatlar:
  *  - düz JSON ( { ... } )
@@ -41,48 +38,132 @@ function parseServiceAccount(raw) {
   return cred;
 }
 
-function init() {
-  if (initTried) return messaging;
-  initTried = true;
+/**
+ * İki tətbiq (sürücü: com.barasdrivers, sərnişin: com.barastaxi) FƏRQLİ Firebase layihələrindədirsə,
+ * bir service account ilə hər ikisinə göndərmək olmur (FCM "SenderId mismatch" / mismatched-credential qaytarır).
+ *   FIREBASE_DRIVER_SERVICE_ACCOUNT_B64   - sürücü tətbiqinin layihəsi (google-services.json: barasdrivers-f3fba)
+ *   FIREBASE_CUSTOMER_SERVICE_ACCOUNT_B64 - sərnişin tətbiqinin layihəsi
+ *   FIREBASE_SERVICE_ACCOUNT_B64          - ümumi (yuxarıdakılar yoxdursa hər ikisi üçün)
+ */
+const ENV = {
+  driver: ['FIREBASE_DRIVER_SERVICE_ACCOUNT_B64', 'FIREBASE_DRIVER_SERVICE_ACCOUNT'],
+  customer: ['FIREBASE_CUSTOMER_SERVICE_ACCOUNT_B64', 'FIREBASE_CUSTOMER_SERVICE_ACCOUNT'],
+  shared: ['FIREBASE_SERVICE_ACCOUNT_B64', 'FIREBASE_SERVICE_ACCOUNT'],
+};
+const firstEnv = (names) => {
+  for (const n of names) if (process.env[n]) return { name: n, raw: process.env[n] };
+  return null;
+};
+
+/** Diaqnostika üçün vəziyyət (GET /admin/push/status). */
+const state = {
+  driver: { configured: false, envVar: null, projectId: null, initError: null, lastOkAt: null, lastError: null },
+  customer: { configured: false, envVar: null, projectId: null, initError: null, lastOkAt: null, lastError: null },
+};
+const clients = {};
+const tried = {};
+
+function init(kind = 'driver') {
+  if (tried[kind]) return clients[kind] || null;
+  tried[kind] = true;
+  const st = state[kind];
   try {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_B64 || process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!raw) {
-      console.warn('[push] FIREBASE_SERVICE_ACCOUNT(_B64) təyin edilməyib: push söndürülüb');
+    const src = firstEnv(ENV[kind]) || firstEnv(ENV.shared);
+    if (!src) {
+      st.initError = 'Firebase service account təyin edilməyib (Heroku Config Vars)';
+      console.warn(`[push] ${kind}: FIREBASE_*SERVICE_ACCOUNT* təyin edilməyib: push söndürülüb`);
       return null;
     }
     // eslint-disable-next-line global-require
     const admin = require('firebase-admin');
-    const cred = parseServiceAccount(raw);
-    const app = admin.apps.length ? admin.app() : admin.initializeApp({ credential: admin.credential.cert(cred) });
-    messaging = admin.messaging(app);
-    console.log('[push] Firebase hazırdır, layihə:', cred.project_id);
+    const cred = parseServiceAccount(src.raw);
+    // Hər layihə üçün ayrıca Firebase app (eyni layihədirsə eyni app paylaşılır)
+    const name = `push_${cred.project_id}`;
+    const existing = (admin.apps || []).find((a) => a && a.name === name);
+    const app = existing || admin.initializeApp({ credential: admin.credential.cert(cred) }, name);
+    clients[kind] = admin.messaging(app);
+    Object.assign(st, { configured: true, envVar: src.name, projectId: cred.project_id, initError: null });
+    console.log(`[push] ${kind}: Firebase hazırdır, layihə: ${cred.project_id} (${src.name})`);
   } catch (e) {
-    console.error('[push] Firebase init alınmadı:', e && e.message ? e.message : e);
-    messaging = null;
+    st.initError = (e && e.message) || String(e);
+    console.error(`[push] ${kind}: Firebase init alınmadı:`, st.initError);
+    clients[kind] = null;
   }
-  return messaging;
+  return clients[kind] || null;
 }
 
 const str = (v) => (v === undefined || v === null ? '' : String(v));
 
-/** FCM xətasında ölü tokeni təmizləyir. */
+/** FCM xəta kodu → admin üçün izah. */
+function explain(code) {
+  const c = String(code || '');
+  if (c.includes('mismatched-credential') || c.includes('sender-id-mismatch')) {
+    return 'Service account başqa Firebase layihəsinə aiddir. Sürücü tətbiqinin layihəsi (google-services.json → project_id) ilə eyni olmalıdır: FIREBASE_DRIVER_SERVICE_ACCOUNT_B64 təyin edin.';
+  }
+  if (c.includes('registration-token-not-registered')) return 'Token köhnədir (tətbiq silinib/yenidən quraşdırılıb). Sürücü tətbiqi açmalıdır: yeni token avtomatik göndəriləcək.';
+  if (c.includes('invalid-registration-token')) return 'Token yanlışdır. Sürücü tətbiqi yenidən açmalıdır.';
+  if (c.includes('third-party-auth-error')) return 'Firebase layihəsində Cloud Messaging API (V1) aktiv deyil və ya açar etibarsızdır.';
+  if (c.includes('invalid-credential') || c.includes('app/invalid-credential')) return 'Service account açarı etibarsızdır (silinib və ya JSON pozulub). Firebase Console-dan yeni açar yaradın.';
+  if (c.includes('quota-exceeded')) return 'FCM limiti aşılıb, bir az sonra yenidən cəhd edin.';
+  if (c.includes('unavailable') || c.includes('internal')) return 'FCM serveri müvəqqəti cavab vermir.';
+  return '';
+}
+
+const isMismatch = (e) => {
+  const c = String((e && e.code) || '') + ' ' + String((e && e.message) || '');
+  return /mismatched-credential|sender-?id.?mismatch/i.test(c);
+};
+
+/**
+ * Göndəriş + layihə ehtiyatı. Token BAŞQA Firebase layihəsinə aiddirsə (mismatched-credential), digər açar varsa
+ * onunla bir dəfə təkrar cəhd edilir. Bu, tətbiqi bir layihədən digərinə köçürərkən lazımdır: köhnə versiyadakı
+ * telefonların tokeni köhnə layihədən, yeni versiyadakılarınkı yeni layihədəndir — hər ikisinə çatır.
+ */
+async function sendVia(kind, m, message) {
+  try {
+    return await m.send(message);
+  } catch (e) {
+    if (!isMismatch(e)) throw e;
+    const otherKind = kind === 'driver' ? 'customer' : 'driver';
+    const other = init(otherKind);
+    // Eyni layihənin açarıdırsa təkrar mənasızdır
+    if (!other || other === m || state[otherKind].projectId === state[kind].projectId) throw e;
+    return other.send(message);
+  }
+}
+
+function noteResult(kind, err) {
+  const st = state[kind];
+  if (!err) {
+    st.lastOkAt = new Date();
+    return;
+  }
+  const code = err && err.code ? String(err.code) : '';
+  st.lastError = { code, message: (err && err.message) || '', hint: explain(code), at: new Date() };
+}
+
+/**
+ * FCM xətasında ölü tokeni təmizləyir.
+ * DİQQƏT: "invalid-argument" token xətası DEYİL (payload xətası ola bilər) — əvvəl bu halda sağlam token silinirdi
+ * və sürücüyə tətbiqi yenidən açana qədər heç bir bildiriş getmirdi.
+ */
 async function handleSendError(driverId, token, e) {
   const code = e && e.code ? String(e.code) : '';
-  if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token') || code.includes('invalid-argument')) {
-    // Token ölüdür (tətbiq silinib / yenilənib): təmizlə
+  noteResult('driver', e);
+  if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
     await Driver.updateOne({ _id: driverId, fcmToken: token }, { $set: { fcmToken: null } }).catch(() => {});
   } else {
-    console.error('[push] göndərilmədi:', code || (e && e.message));
+    console.error('[push] göndərilmədi:', code || (e && e.message), explain(code));
   }
 }
 
 async function sendToDriver(driverId, data, { ttlMs = 30000 } = {}) {
-  const m = init();
+  const m = init('driver');
   if (!m || !driverId) return false;
   const driver = await Driver.findById(driverId).select('+fcmToken').lean();
   if (!driver || !driver.fcmToken) return false;
   try {
-    await m.send({
+    await sendVia('driver', m, {
       token: driver.fcmToken,
       data,
       android: {
@@ -91,6 +172,7 @@ async function sendToDriver(driverId, data, { ttlMs = 30000 } = {}) {
         collapseKey: 'taxi_offer',
       },
     });
+    noteResult('driver');
     return true;
   } catch (e) {
     await handleSendError(driverId, driver.fcmToken, e);
@@ -128,7 +210,7 @@ const azn = (minor) => `${(Number(minor || 0) / 100).toFixed(2)} ₼`;
  *  tag     - eyni tag-lı yeni bildiriş köhnəni əvəz edir (məs. bir sifarişin çatı bir bildiriş olur)
  */
 async function sendNotification(driverId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 60 * 60 * 1000, imageUrl }) {
-  const m = init();
+  const m = init('driver');
   if (!m || !driverId) return false;
   const driver = await Driver.findById(driverId).select('+fcmToken').lean();
   if (!driver || !driver.fcmToken) return false;
@@ -137,7 +219,7 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
   for (const [k, v] of Object.entries(data)) payload[k] = str(v); // FCM data dəyərləri yalnız string ola bilər
 
   try {
-    await m.send({
+    await sendVia('driver', m, {
       token: driver.fcmToken,
       // imageUrl → Android bildirişində böyük şəkil (BigPicture). Yalnız https ünvan qəbul olunur.
       notification: {
@@ -158,6 +240,7 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
         },
       },
     });
+    noteResult('driver');
     return true;
   } catch (e) {
     await handleSendError(driverId, driver.fcmToken, e);
@@ -170,14 +253,14 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
  * trip_updates, chat_messages. Toxunanda tətbiq açılır (data.type / orderId ilə).
  */
 async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000 }) {
-  const m = init();
+  const m = init('customer');
   if (!m || !customerId) return false;
   const customer = await Customer.findById(customerId).select('+fcmToken').lean();
   if (!customer || !customer.fcmToken) return false;
   const payload = { type: str(type) };
   for (const [k, v] of Object.entries(data)) payload[k] = str(v);
   try {
-    await m.send({
+    await sendVia('customer', m, {
       token: customer.fcmToken,
       notification: { title: clip(title, 80), body: clip(body, 180) },
       data: payload,
@@ -192,10 +275,12 @@ async function sendToCustomer(customerId, { title, body, type, channel = 'trip',
         },
       },
     });
+    noteResult('customer');
     return true;
   } catch (e) {
     const code = e && e.code ? String(e.code) : '';
-    if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token') || code.includes('invalid-argument')) {
+    noteResult('customer', e);
+    if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
       await Customer.updateOne({ _id: customerId, fcmToken: customer.fcmToken }, { $set: { fcmToken: null } }).catch(() => {});
     } else {
       console.error('[push] müştəriyə göndərilmədi:', code || (e && e.message));
@@ -397,7 +482,120 @@ function sendOfferEnded(driverId, orderId, reason) {
   return sendToDriver(driverId, { type: 'offer_cancel', orderId: str(orderId), reason: str(reason) }, { ttlMs: 20000 });
 }
 
+/** Admin üçün: Firebase konfiqurasiyası + son uğurlu/uğursuz göndəriş. */
+function getStatus() {
+  init('driver');
+  init('customer');
+  return JSON.parse(JSON.stringify(state));
+}
+
+/**
+ * Sürücüyə test bildirişi + addım-addım diaqnoz. Hər addımda nə alınmadığı və necə düzəldiləcəyi qaytarılır.
+ * delayMs: sürücü tətbiqi arxa plana keçirə bilsin deyə göndərişi gecikdirmək (tətbiqdən "Bildirişi yoxla").
+ */
+async function testDriver(driverId, { delayMs = 0 } = {}) {
+  const out = { firebase: false, projectId: null, hasToken: false, tokenUpdatedAt: null, sent: false, errorCode: null, hint: '' };
+  const m = init('driver');
+  out.projectId = state.driver.projectId;
+  if (!m) {
+    out.hint = `${state.driver.initError || 'Firebase hazır deyil'}. Heroku → Settings → Config Vars: FIREBASE_DRIVER_SERVICE_ACCOUNT_B64 (və ya FIREBASE_SERVICE_ACCOUNT_B64) əlavə edin.`;
+    return out;
+  }
+  out.firebase = true;
+  const d = await Driver.findById(driverId).select('+fcmToken fcmTokenUpdatedAt').lean();
+  if (!d || !d.fcmToken) {
+    out.hint = 'Sürücünün cihaz tokeni serverdə yoxdur: tətbiqə yenidən daxil olsun, bildiriş icazəsini versin (Android 13+), internet olsun.';
+    return out;
+  }
+  out.hasToken = true;
+  out.tokenUpdatedAt = d.fcmTokenUpdatedAt || null;
+  const send = () =>
+    sendVia('driver', m, {
+      token: d.fcmToken,
+      notification: { title: 'Test bildirişi ✔', body: 'Bildirişlər işləyir. Bu mesajı görürsünüzsə, hər şey qaydasındadır.' },
+      data: { type: 'test' },
+      android: { priority: 'high', ttl: 120000, notification: { channelId: CHANNEL.trip, clickAction: CLICK_ACTION, sound: 'default', tag: 'push_test' } },
+    });
+  if (delayMs > 0) {
+    // Tətbiqdən çağırılıb: cavab dərhal qayıdır, göndəriş bir neçə saniyə sonra (sürücü tətbiqi bağlaya bilsin)
+    setTimeout(() => {
+      send().then(() => noteResult('driver')).catch((e) => handleSendError(driverId, d.fcmToken, e));
+    }, delayMs);
+    out.sent = true;
+    out.scheduled = true;
+    return out;
+  }
+  try {
+    await send();
+    noteResult('driver');
+    out.sent = true;
+  } catch (e) {
+    await handleSendError(driverId, d.fcmToken, e);
+    out.errorCode = e && e.code ? String(e.code) : 'UNKNOWN';
+    out.hint = explain(out.errorCode) || (e && e.message) || '';
+  }
+  return out;
+}
+
+/**
+ * Sərnişinə test bildirişi + diaqnoz (admin → Ayarlar → Push bildirişləri → "Sərnişin").
+ * Hansı layihənin açarı ilə çatdığını da qaytarır (layihə köçürmə dövründə faydalıdır).
+ */
+async function testCustomer(customerId) {
+  const out = { firebase: false, projectId: null, hasToken: false, tokenUpdatedAt: null, sent: false, viaProjectId: null, errorCode: null, hint: '' };
+  const m = init('customer');
+  out.projectId = state.customer.projectId;
+  if (!m) {
+    out.hint = `${state.customer.initError || 'Firebase hazır deyil'}. Heroku Config Vars: FIREBASE_CUSTOMER_SERVICE_ACCOUNT_B64 (və ya FIREBASE_SERVICE_ACCOUNT_B64).`;
+    return out;
+  }
+  out.firebase = true;
+  const c = await Customer.findById(customerId).select('+fcmToken fcmTokenUpdatedAt').lean();
+  if (!c || !c.fcmToken) {
+    out.hint = 'Sərnişinin cihaz tokeni serverdə YOXDUR. Sərnişin tətbiqi tokeni POST /customers/fcm-token ilə göndərmir və ya bildiriş icazəsi verilməyib. Problem sərnişin tətbiqindədir.';
+    return out;
+  }
+  out.hasToken = true;
+  out.tokenUpdatedAt = c.fcmTokenUpdatedAt || null;
+  const message = {
+    token: c.fcmToken,
+    notification: { title: 'Test bildirişi ✔', body: 'Baras: bildirişlər işləyir.' },
+    data: { type: 'test' },
+    android: { priority: 'high', ttl: 120000, notification: { channelId: CHANNEL.trip, sound: 'default', tag: 'push_test' } },
+  };
+  try {
+    await m.send(message);
+    out.sent = true;
+    out.viaProjectId = state.customer.projectId;
+    noteResult('customer');
+  } catch (e) {
+    // Başqa layihənin tokeni: sürücü açarı ilə yoxla (sərnişin tətbiqi o layihəyə köçürülübsə)
+    if (isMismatch(e) && init('driver') && state.driver.projectId !== state.customer.projectId) {
+      try {
+        await init('driver').send(message);
+        out.sent = true;
+        out.viaProjectId = state.driver.projectId;
+        out.hint = `Token ${state.driver.projectId} layihəsinə aiddir (ehtiyat açarla çatdı). Bütün sərnişinlər yeni versiyaya keçəndə FIREBASE_CUSTOMER_SERVICE_ACCOUNT_B64 = ${state.driver.projectId} açarı edin.`;
+        return out;
+      } catch (e2) {
+        e = e2; // eslint-disable-line no-ex-assign
+      }
+    }
+    noteResult('customer', e);
+    out.errorCode = e && e.code ? String(e.code) : 'UNKNOWN';
+    out.hint = explain(out.errorCode) || (e && e.message) || '';
+    if (/not-registered|invalid-registration/.test(out.errorCode)) {
+      await Customer.updateOne({ _id: customerId, fcmToken: c.fcmToken }, { $set: { fcmToken: null } }).catch(() => {});
+    }
+  }
+  return out;
+}
+
 module.exports = {
+  getStatus,
+  testDriver,
+  testCustomer,
+  explain,
   sendOffer,
   sendOfferEnded,
   sendToDriver,

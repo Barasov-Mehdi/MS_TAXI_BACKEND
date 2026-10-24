@@ -1119,6 +1119,50 @@ router.delete('/news/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// =============================================================== Push bildiriş diaqnostikası
+
+/** Firebase konfiqurasiyası (hansı layihə, son xəta) + tokeni olan sürücü sayı. */
+router.get('/push/status', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const [withToken, total] = await Promise.all([
+      Driver.countDocuments({ deletedAt: null, fcmToken: { $ne: null } }),
+      Driver.countDocuments({ deletedAt: null }),
+    ]);
+    ok(res, { ...pushService.getStatus(), drivers: { total, withToken } });
+  } catch (e) { next(e); }
+});
+
+/** Bir sürücüyə test bildirişi (telefon və ya id ilə) + addım-addım nəticə. */
+router.post(
+  '/push/test',
+  validated(Joi.object({
+    driverId: objectId,
+    phone: Joi.string().trim().max(20),
+    target: Joi.string().valid('driver', 'customer').default('driver'),
+  }).or('driverId', 'phone')),
+  async (req, res, next) => {
+    try {
+      // Sərnişin (yalnız baş admin): telefonla tapılır
+      if (req.body.target === 'customer') {
+        if (!scopeOf(req).isSuper) throw new AppError('FORBIDDEN', 'Yalnız baş admin', 403);
+        const u = await User.findOne({ phone: normalizePhone(req.body.phone) || req.body.phone, role: 'CUSTOMER' }).select('_id').lean();
+        const c = u && (await Customer.findOne({ userId: u._id }).select('_id').lean());
+        if (!c) throw new AppError('NOT_FOUND', 'Sərnişin tapılmadı', 404);
+        return ok(res, await pushService.testCustomer(c._id));
+      }
+      let driverId = req.body.driverId;
+      if (!driverId) {
+        const u = await User.findOne({ phone: normalizePhone(req.body.phone) || req.body.phone, role: 'DRIVER' }).select('_id').lean();
+        const d = u && (await Driver.findOne({ userId: u._id }).select('_id').lean());
+        if (!d) throw new AppError('DRIVER_NOT_FOUND', 'Sürücü tapılmadı', 404);
+        driverId = d._id;
+      }
+      const driver = await loadDriverInScope(req, driverId);
+      ok(res, await pushService.testDriver(driver._id));
+    } catch (e) { next(e); }
+  }
+);
+
 // =============================================================== Tətbiq versiyası (yalnız baş admin)
 // Play-ə yeni AAB yüklədikdən və yayımlandıqdan SONRA çağırın:
 //   PUT /admin/app-version { latestVersionCode: 4, latestVersionName: "3.1.0", minVersionCode: 3, notes: ["..."], notify: true }

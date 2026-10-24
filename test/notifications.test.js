@@ -80,3 +80,39 @@ test('naməlum hesab növü göndərilmir', async () => {
   expect(await push.notifyAccount('d1', 'nope')).toBe(false);
   expect(mockSend).not.toHaveBeenCalled();
 });
+
+test('invalid-argument sağlam tokeni SİLMİR (payload xətası ola bilər)', async () => {
+  mockSend.mockRejectedValue({ code: 'messaging/invalid-argument' });
+  expect(await push.notifyQueuedOrder('d1', 'o1')).toBe(false);
+  expect(mockUpdateOne).not.toHaveBeenCalled();
+});
+
+test('başqa Firebase layihəsinin açarı → izahlı diaqnoz', async () => {
+  mockSend.mockRejectedValue({ code: 'messaging/mismatched-credential', message: 'SenderId mismatch' });
+  const r = await push.testDriver('d1');
+  expect(r).toMatchObject({ firebase: true, hasToken: true, sent: false, errorCode: 'messaging/mismatched-credential' });
+  expect(r.hint).toMatch(/FIREBASE_DRIVER_SERVICE_ACCOUNT_B64/);
+  expect(push.getStatus().driver.lastError.code).toBe('messaging/mismatched-credential');
+});
+
+test('test bildirişi uğurlu', async () => {
+  mockSend.mockResolvedValue('id');
+  const r = await push.testDriver('d1');
+  expect(r.sent).toBe(true);
+  expect(mockSend.mock.calls[0][0].data).toEqual({ type: 'test' });
+  expect(push.getStatus().driver.lastOkAt).toBeTruthy();
+});
+
+test('token yoxdursa göndərilmir və səbəb deyilir', async () => {
+  mockDriverDoc = { _id: 'd1', fcmToken: null };
+  const r = await push.testDriver('d1');
+  expect(r).toMatchObject({ firebase: true, hasToken: false, sent: false });
+  expect(mockSend).not.toHaveBeenCalled();
+});
+
+test('başqa layihənin tokeni: digər açarla təkrar cəhd (layihə köçürmə dövrü)', async () => {
+  // Bu testdə hər iki tip eyni (tək) açardan gəlir → digər "client" eynidir, təkrar cəhd olmur, xəta qaytarılır
+  mockSend.mockRejectedValue({ code: 'messaging/mismatched-credential' });
+  expect(await push.notifyQueuedOrder('d1', 'o1')).toBe(false);
+  expect(mockSend).toHaveBeenCalledTimes(1);
+});

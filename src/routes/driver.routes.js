@@ -308,6 +308,18 @@ router.post('/device-token', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * "Bildirişləri yoxla" (tətbiqdən): serverdə Firebase və token vəziyyəti + 5 san sonra test bildirişi.
+ * Sürücü bu müddətdə tətbiqi arxa plana keçirir: bildiriş gəlirsə arxa plan bildirişləri işləyir.
+ */
+router.post('/push-test', async (req, res, next) => {
+  try {
+    const pushService = require('../services/push.service');
+    const delaySec = Math.min(Math.max(Number(req.body?.delaySec) || 5, 0), 15);
+    ok(res, await pushService.testDriver(req.driver._id, { delayMs: delaySec * 1000 }));
+  } catch (e) { next(e); }
+});
+
 router.delete('/device-token', async (req, res, next) => {
   try {
     await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: null } });
