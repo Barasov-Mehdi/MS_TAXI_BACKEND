@@ -8,7 +8,7 @@ const { AppError } = require('../utils/errors');
  */
 async function sendOtpSms(phone, code, purpose = 'login') {
   const label = purpose === 'reset' ? 'parol sıfırlama kodunuz' : 'təsdiq kodunuz';
-  const text = `MS Taxi: ${label} ${code}. Kodu heç kimlə paylaşmayın.`;
+  const text = `Baras: ${label} ${code}. Kodu heç kimlə paylaşmayın.`;
 
   if (!config.sms.apiKey) {
     if (config.env === 'production') {
