@@ -12,10 +12,10 @@ jest.mock('../src/services/settings.service', () => ({
   setSetting: jest.fn(async (k, v) => { settings[k] = v; }),
 }));
 jest.mock('../src/models', () => ({
-  News: { countDocuments: jest.fn(async () => 2), find: jest.fn(), create: jest.fn() },
+  News: { countDocuments: jest.fn(async () => 2), find: jest.fn(), create: jest.fn(), findOne: jest.fn(), findOneAndUpdate: jest.fn() },
   Driver: { updateOne: jest.fn(async () => ({})), find: jest.fn() },
 }));
-jest.mock('../src/websocket/emitter', () => ({ toDriver: jest.fn() }));
+jest.mock('../src/websocket/emitter', () => ({ toDriver: jest.fn(), toDrivers: jest.fn(), toAdminsFor: jest.fn() }));
 jest.mock('../src/services/push.service', () => ({
   notifyNews: jest.fn(async () => true),
   notifyAppUpdate: jest.fn(async () => true),
@@ -57,6 +57,8 @@ test('yeni versiya qeyd edilir və köhnə versiyalı sürücülərə push gedir
   const r = await appVersion.setDriverAndroid({ latestVersionCode: 6, latestVersionName: '3.3.0' }, { notify: true });
   expect(r.notified).toBe(2);
   expect(push.notifyAppUpdate).toHaveBeenCalledTimes(2);
+  // açıq tətbiqlərə dərhal socket
+  expect(realtime.toDrivers).toHaveBeenCalledWith(null, 'app_version_changed', expect.objectContaining({ latestVersionCode: expect.any(Number) }));
 });
 
 test('sürücünün versiyası yadda saxlanılır, boş dəyər yazılmır', async () => {
@@ -100,5 +102,26 @@ describe('news', () => {
     });
     expect(r.delivery.scheduled).toBe(true);
     expect(push.notifyNews).not.toHaveBeenCalled();
+  });
+
+  test('planlaşdırılmış xəbər vaxtı çatanda bir dəfə elan olunur (silent → push yox)', async () => {
+    const due = { _id: 'n3', title: 'Bayram', body: 'Təbrik', cityId: null, publishedAt: new Date(), silent: true };
+    const q = (v) => ({ lean: async () => v }); // findOneAndUpdate(...).lean()
+    models.News.findOneAndUpdate.mockReturnValueOnce(q(due)).mockReturnValueOnce(q(null));
+    models.Driver.find.mockReturnValue({ select: () => ({ lean: async () => [{ _id: 'd1' }, { _id: 'd2' }] }) });
+    const n = await news.announceDue();
+    expect(n).toBe(1);
+    expect(realtime.toDriver).toHaveBeenCalledTimes(2);
+    expect(push.notifyNews).not.toHaveBeenCalled();
+    expect(realtime.toAdminsFor).toHaveBeenCalledWith(null, 'admin_news', expect.objectContaining({ action: 'announced' }));
+  });
+
+  test('düzəliş və silinmə sürücülərə canlı göndərilir', async () => {
+    const doc = { _id: 'n4', title: 'A', body: 'B', cityId: null, announcedAt: new Date(), publishedAt: new Date(), save: jest.fn(async () => {}) };
+    models.News.findOne.mockResolvedValue(doc);
+    await news.update({ isSuper: true }, '64b000000000000000000004', { title: 'Yeni başlıq' });
+    expect(realtime.toDrivers).toHaveBeenCalledWith(null, 'news_updated', expect.objectContaining({ title: 'Yeni başlıq' }));
+    await news.remove({ isSuper: true }, '64b000000000000000000004');
+    expect(realtime.toDrivers).toHaveBeenCalledWith(null, 'news_deleted', { id: 'n4' });
   });
 });

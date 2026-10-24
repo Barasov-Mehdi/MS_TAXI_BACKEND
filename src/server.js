@@ -80,6 +80,8 @@ async function start() {
   await new Promise((resolve) => server.listen(config.port, resolve));
   console.log(`taxi-backend listening on :${config.port}`);
   startDispatchLoop();
+  // Planlaşdırılmış "Yeniliklər" vaxtı çatanda sürücülərə göndərilir
+  require('./services/news.service').startScheduler();
 }
 
 let shuttingDown = false;
@@ -99,6 +101,7 @@ async function shutdown(signal) {
   force.unref();
   try {
     await stopDispatchLoop();
+    require('./services/news.service').stopScheduler();
     if (io) await new Promise((resolve) => io.close(resolve));
     if (server.listening) await new Promise((resolve) => server.close(resolve));
     await mongoose.disconnect();

@@ -21,6 +21,10 @@ const newsSchema = new mongoose.Schema(
     // Bu tarixdən sonra siyahıda görünmür (null → həmişə)
     expiresAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // Sürücülərə elan (socket + push) göndərildiyi vaxt. null + publishedAt keçib → planlaşdırıcı göndərəcək
+    announcedAt: { type: Date, default: null, index: true },
+    // true → elan olunanda push göndərilmir (yalnız siyahıda + tətbiq açıqdırsa banner)
+    silent: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }

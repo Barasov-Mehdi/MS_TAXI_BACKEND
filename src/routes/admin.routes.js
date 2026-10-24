@@ -1082,7 +1082,7 @@ router.post(
   }
 );
 
-router.patch('/news/:id', validated(Joi.object(newsBody)), async (req, res, next) => {
+router.patch('/news/:id', validated(Joi.object({ ...newsBody, publishedAt: Joi.date().iso().allow(null, '') })), async (req, res, next) => {
   try {
     const n = await newsService.update(scopeOf(req), req.params.id, req.body);
     await audit(req, 'NEWS_UPDATE', 'News', n.id, null, req.body);

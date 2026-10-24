@@ -57,6 +57,9 @@ function attachWebsocket(httpServer) {
         const d = await Driver.findOne({ userId: user._id });
         if (d) {
           socket.join(`driver:${d._id}`);
+          // Ümumi yayım otaqları: tətbiq versiyası, yeniliklərin dəyişməsi/silinməsi
+          socket.join('drivers');
+          if (d.cityId) socket.join(`drivers:city:${d.cityId}`);
           // Bağlantı qopub bərpa olubsa: vaxtı bitməmiş təklif itməsin.
           const pending = await dispatchService.getPendingOfferForDriver(d);
           if (pending) socket.emit('new_order', pending);
@@ -66,6 +69,8 @@ function attachWebsocket(httpServer) {
         // Baş admin bütün hadisələri, regional admin yalnız öz şəhərininkiləri alır
         if (user.adminCityId) socket.join(`admin:city:${user.adminCityId}`);
         else socket.join('admin:operations');
+        // Bütün adminlərə aid hadisələr (məs. ümumi xəbər)
+        socket.join('admin:all');
       }
     } catch (e) {
       console.error('[ws] connection setup failed', e);

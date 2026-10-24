@@ -68,6 +68,15 @@ async function setDriverAndroid({ latestVersionCode, latestVersionName, minVersi
   if (storeUrl !== undefined) await setSetting(KEYS.storeUrl, String(storeUrl || '').trim());
   const info = await getDriverAndroid();
 
+  // Açıq tətbiqlər dərhal yoxlasın (yeniləmə pəncərəsi gözləmədən çıxsın)
+  try {
+    // eslint-disable-next-line global-require
+    require('../websocket/emitter').toDrivers(null, 'app_version_changed', {
+      latestVersionCode: info.latestVersionCode,
+      minVersionCode: info.minVersionCode,
+    });
+  } catch (_) { /* səssiz */ }
+
   let notified = 0;
   if (notify) {
     // eslint-disable-next-line global-require

@@ -50,6 +50,14 @@ module.exports = {
     t.emit(event, payload);
   },
   toParties: emitToParties,
+  // Sürücülərə yayım: cityId verilibsə yalnız həmin şəhər, yoxsa bütün qoşulu sürücülər
+  toDrivers: (cityId, event, payload) => emit(cityId ? `drivers:city:${cityId}` : 'drivers', event, payload),
+  // Admin paneli: cityId null → bütün adminlər; dolu → baş adminlər + həmin şəhərin adminləri
+  toAdminsFor: (cityId, event, payload) => {
+    if (!ioRef) return;
+    if (!cityId) ioRef.to('admin:all').emit(event, payload);
+    else ioRef.to('admin:operations').to(`admin:city:${cityId}`).emit(event, payload);
+  },
   // Otaqdakı bütün bağlantıları qırır (məs. bloklanmış istifadəçi)
   disconnectRoom: (room) => {
     if (ioRef) ioRef.in(room).disconnectSockets(true);

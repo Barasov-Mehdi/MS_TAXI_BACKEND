@@ -83,7 +83,15 @@ async function listForAdmin(scope, { cityId, limit = 100 } = {}) {
   else if (cityId === 'none') q.cityId = null;
   else if (cityId && mongoose.isValidObjectId(cityId)) q.cityId = new mongoose.Types.ObjectId(cityId);
   const rows = await News.find(q).sort({ publishedAt: -1 }).limit(Math.min(Number(limit) || 100, 300)).lean();
-  return rows.map((n) => ({ ...publicNews(n), expiresAt: n.expiresAt, createdBy: n.createdBy, createdAt: n.createdAt }));
+  return rows.map((n) => ({
+    ...publicNews(n),
+    expiresAt: n.expiresAt,
+    announcedAt: n.announcedAt,
+    scheduled: !n.announcedAt && new Date(n.publishedAt) > new Date(),
+    silent: !!n.silent,
+    createdBy: n.createdBy,
+    createdAt: n.createdAt,
+  }));
 }
 
 /** Regional admin yalnız öz şəhərinə yazır; baş admin cityId=null (hamı) və ya istənilən şəhər. */
@@ -126,7 +134,26 @@ async function announce(news, { push = true } = {}) {
   return { drivers: drivers.length, pushed };
 }
 
+/** Admin panelinin açıq səhifələri üçün (Yeniliklər siyahısı canlı yenilənsin). */
+function toAdmins(news, action) {
+  try {
+    // eslint-disable-next-line global-require
+    require('../websocket/emitter').toAdminsFor(news.cityId || null, 'admin_news', { action, news: publicNews(news) });
+  } catch (_) { /* səssiz */ }
+}
+
+/** Sürücü tətbiqlərinə dəyişiklik/silinmə (bildiriş yox, yalnız siyahı yenilənir). */
+function toDrivers(news, event, payload) {
+  try {
+    // eslint-disable-next-line global-require
+    require('../websocket/emitter').toDrivers(news.cityId || null, event, payload);
+  } catch (_) { /* səssiz */ }
+}
+
 async function create(admin, scope, body) {
+  const now = new Date();
+  const publishedAt = body.publishedAt ? new Date(body.publishedAt) : now;
+  const scheduled = publishedAt > now;
   const doc = await News.create({
     title: clean(body.title, 120),
     body: clean(body.body, 4000),
@@ -135,23 +162,30 @@ async function create(admin, scope, body) {
     pinned: !!body.pinned,
     linkUrl: body.linkUrl ? clean(body.linkUrl, 500) : null,
     linkLabel: body.linkLabel ? clean(body.linkLabel, 40) : null,
-    publishedAt: body.publishedAt ? new Date(body.publishedAt) : new Date(),
+    publishedAt,
     expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
     createdBy: admin && admin._id,
+    // Planlaşdırılıbsa planlaşdırıcı (startScheduler) vaxtı çatanda göndərəcək; push istənməyibsə də qeyd olunur
+    announcedAt: scheduled ? null : now,
+    silent: body.notify === false,
   });
-  // Gələcək tarixə planlaşdırılıbsa indi elan olunmur (tətbiq vaxtı çatanda siyahıda görəcək)
-  let delivery = { drivers: 0, pushed: 0, scheduled: doc.publishedAt > new Date() };
-  if (!delivery.scheduled) {
-    delivery = { ...(await announce(doc, { push: body.notify !== false }).catch((e) => {
-      console.error('[news] elan göndərilmədi', e && e.message);
-      return { drivers: 0, pushed: 0 };
-    })), scheduled: false };
+  let delivery = { drivers: 0, pushed: 0, scheduled };
+  if (!scheduled) {
+    delivery = {
+      ...(await announce(doc, { push: body.notify !== false }).catch((e) => {
+        console.error('[news] elan göndərilmədi', e && e.message);
+        return { drivers: 0, pushed: 0 };
+      })),
+      scheduled: false,
+    };
   }
+  toAdmins(doc, 'created');
   return { news: publicNews(doc), delivery };
 }
 
 async function update(scope, id, body) {
   const n = await loadInScope(scope, id);
+  const oldCity = n.cityId;
   if (body.title !== undefined) n.title = clean(body.title, 120);
   if (body.body !== undefined) n.body = clean(body.body, 4000);
   if (body.kind !== undefined) n.kind = body.kind;
@@ -160,15 +194,61 @@ async function update(scope, id, body) {
   if (body.linkLabel !== undefined) n.linkLabel = body.linkLabel ? clean(body.linkLabel, 40) : null;
   if (body.expiresAt !== undefined) n.expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
   if (body.cityId !== undefined && scope.isSuper) n.cityId = resolveCity(scope, body.cityId);
+  // Hələ elan olunmamış (planlaşdırılmış) xəbərin vaxtı dəyişdirilə bilər
+  if (body.publishedAt !== undefined && !n.announcedAt && body.publishedAt) n.publishedAt = new Date(body.publishedAt);
   await n.save();
-  return publicNews(n);
+  const pub = publicNews(n);
+  if (n.announcedAt) {
+    // Şəhər dəyişibsə köhnə şəhərdən silinsin
+    if (String(oldCity || '') !== String(n.cityId || '')) toDrivers({ cityId: oldCity }, 'news_deleted', { id: pub.id });
+    toDrivers(n, 'news_updated', pub);
+  }
+  toAdmins(n, 'updated');
+  return pub;
 }
 
 async function remove(scope, id) {
   const n = await loadInScope(scope, id);
   n.deletedAt = new Date();
   await n.save();
+  toDrivers(n, 'news_deleted', { id: String(n._id) });
+  toAdmins(n, 'deleted');
   return { deleted: true };
+}
+
+/**
+ * Vaxtı çatmış, hələ elan olunmamış xəbərləri göndərir.
+ * Atomik "götürmə" (findOneAndUpdate) — bir neçə dyno işləsə də hər xəbər bir dəfə göndərilir.
+ */
+async function announceDue(now = new Date()) {
+  let count = 0;
+  for (let i = 0; i < 20; i += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const n = await News.findOneAndUpdate(
+      { deletedAt: null, announcedAt: null, publishedAt: { $lte: now }, $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }] },
+      { $set: { announcedAt: now } },
+      { new: true, sort: { publishedAt: 1 } }
+    ).lean();
+    if (!n) break;
+    // eslint-disable-next-line no-await-in-loop
+    await announce(n, { push: !n.silent }).catch((e) => console.error('[news] planlı elan alınmadı', e && e.message));
+    toAdmins(n, 'announced');
+    count += 1;
+  }
+  return count;
+}
+
+let timer = null;
+function startScheduler(intervalMs = 30000) {
+  if (timer) return;
+  const tick = () => announceDue().catch((e) => console.error('[news] planlaşdırıcı', e && e.message));
+  timer = setInterval(tick, intervalMs);
+  if (timer.unref) timer.unref();
+  tick();
+}
+function stopScheduler() {
+  if (timer) clearInterval(timer);
+  timer = null;
 }
 
 module.exports = {
@@ -181,5 +261,8 @@ module.exports = {
   update,
   remove,
   announce,
+  announceDue,
+  startScheduler,
+  stopScheduler,
   visibleQuery,
 };
