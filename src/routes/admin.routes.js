@@ -1056,7 +1056,28 @@ const newsBody = {
   linkUrl: Joi.string().trim().uri({ scheme: ['https', 'http', 'tel', 'market'] }).max(500).allow(null, ''),
   linkLabel: Joi.string().trim().max(40).allow(null, ''),
   expiresAt: Joi.date().iso().allow(null, ''),
+  imageId: objectId.allow(null, ''),
+  imageUrl: Joi.string().trim().uri({ scheme: ['https', 'http'] }).max(500).allow(null, ''),
 };
+
+// Xəbər şəkli: yaddaşda qəbul olunur → GridFS. Admin panel göndərmədən əvvəl şəkli kiçildir (≤1600px).
+const newsImageUpload = require('multer')({
+  storage: require('multer').memoryStorage(),
+  limits: { fileSize: require('../services/newsImage.service').MAX_BYTES, files: 1 },
+}).single('file');
+
+router.post('/news/image', (req, res, next) =>
+  newsImageUpload(req, res, async (err) => {
+    try {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') throw new AppError('FILE_TOO_LARGE', 'Şəkil ən çox 5 MB ola bilər', 413);
+        throw new AppError('VALIDATION_ERROR', 'Fayl yüklənmədi', 400);
+      }
+      const images = require('../services/newsImage.service');
+      const r = await images.upload(req.file, { uploadedBy: req.user._id });
+      ok(res, { ...r, imageUrl: images.urlFor(r.imageId, req) }, {}, 201);
+    } catch (e) { next(e); }
+  }));
 
 router.get('/news', async (req, res, next) => {
   try {

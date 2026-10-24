@@ -17,6 +17,9 @@ const newsSchema = new mongoose.Schema(
     // İstəyə bağlı keçid (məs. Play Store, sayt, forma)
     linkUrl: { type: String, default: null, maxlength: 500 },
     linkLabel: { type: String, default: null, maxlength: 40 },
+    // Şəkil (GridFS: newsImages). imageUrl mütləq ünvandır (tətbiq + push bildirişi üçün)
+    imageId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    imageUrl: { type: String, default: null, maxlength: 500 },
     publishedAt: { type: Date, default: Date.now, index: true },
     // Bu tarixdən sonra siyahıda görünmür (null → həmişə)
     expiresAt: { type: Date, default: null },

@@ -26,6 +26,8 @@ app.use(express.json({ limit: '1mb' }));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 // /health limitdən kənardadır: monitorinq/load balancer sorğuları kvotanı yemir.
 app.use('/health', require('./routes/health.routes'));
+// "Yeniliklər" şəkilləri: statik, uzun keşlənir, limitdən kənar
+app.use('/app/news-images', require('./routes/app.routes').images);
 // Limit giriş etmiş istifadəçi üzrə hesablanır (token imzası yoxlanılır). Mobil operatorlarda (CGNAT) onlarla sürücü
 // eyni IP ilə çıxır və hər sürücü tətbiqi dəqiqədə ~25 sorğu göndərir: yalnız IP üzrə limit hamısını bloklayardı.
 // Token yoxdursa/etibarsızdırsa IP üzrə qalır.

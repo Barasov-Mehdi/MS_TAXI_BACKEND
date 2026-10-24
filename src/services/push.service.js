@@ -127,7 +127,7 @@ const azn = (minor) => `${(Number(minor || 0) / 100).toFixed(2)} ₼`;
  *  channel - CHANNEL açarı (səs/əhəmiyyət dərəcəsi)
  *  tag     - eyni tag-lı yeni bildiriş köhnəni əvəz edir (məs. bir sifarişin çatı bir bildiriş olur)
  */
-async function sendNotification(driverId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 60 * 60 * 1000 }) {
+async function sendNotification(driverId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 60 * 60 * 1000, imageUrl }) {
   const m = init();
   if (!m || !driverId) return false;
   const driver = await Driver.findById(driverId).select('+fcmToken').lean();
@@ -139,7 +139,12 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
   try {
     await m.send({
       token: driver.fcmToken,
-      notification: { title: clip(title, 80), body: clip(body, 180) },
+      // imageUrl → Android bildirişində böyük şəkil (BigPicture). Yalnız https ünvan qəbul olunur.
+      notification: {
+        title: clip(title, 80),
+        body: clip(body, 180),
+        ...(imageUrl && /^https:\/\//.test(imageUrl) ? { imageUrl } : {}),
+      },
       data: payload,
       android: {
         priority: 'high',
@@ -331,6 +336,7 @@ function notifyNews(driverId, news) {
     tag: 'news',
     data: { newsId: news.id },
     ttlMs: 24 * 60 * 60 * 1000,
+    imageUrl: news.imageUrl || undefined,
   });
 }
 

@@ -9,6 +9,7 @@
 const mongoose = require('mongoose');
 const { News, Driver } = require('../models');
 const { AppError } = require('../utils/errors');
+const imageService = require('./newsImage.service');
 
 const PAGE = 30;
 
@@ -22,6 +23,8 @@ function publicNews(n) {
     pinned: !!n.pinned,
     linkUrl: n.linkUrl || null,
     linkLabel: n.linkLabel || null,
+    // PUBLIC_API_URL varsa ondan, yoxdursa yükləmə zamanı yadda saxlanmış mütləq ünvan
+    imageUrl: n.imageId ? (process.env.PUBLIC_API_URL ? imageService.urlFor(n.imageId, null) : n.imageUrl || null) : null,
     publishedAt: n.publishedAt,
   };
 }
@@ -162,6 +165,8 @@ async function create(admin, scope, body) {
     pinned: !!body.pinned,
     linkUrl: body.linkUrl ? clean(body.linkUrl, 500) : null,
     linkLabel: body.linkLabel ? clean(body.linkLabel, 40) : null,
+    imageId: body.imageId || null,
+    imageUrl: body.imageId ? body.imageUrl || null : null,
     publishedAt,
     expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
     createdBy: admin && admin._id,
@@ -193,6 +198,12 @@ async function update(scope, id, body) {
   if (body.linkUrl !== undefined) n.linkUrl = body.linkUrl ? clean(body.linkUrl, 500) : null;
   if (body.linkLabel !== undefined) n.linkLabel = body.linkLabel ? clean(body.linkLabel, 40) : null;
   if (body.expiresAt !== undefined) n.expiresAt = body.expiresAt ? new Date(body.expiresAt) : null;
+  if (body.imageId !== undefined && String(body.imageId || '') !== String(n.imageId || '')) {
+    const old = n.imageId;
+    n.imageId = body.imageId || null;
+    n.imageUrl = body.imageId ? body.imageUrl || null : null;
+    if (old) imageService.remove(old); // köhnə şəkil GridFS-dən silinir
+  }
   if (body.cityId !== undefined && scope.isSuper) n.cityId = resolveCity(scope, body.cityId);
   // Hələ elan olunmamış (planlaşdırılmış) xəbərin vaxtı dəyişdirilə bilər
   if (body.publishedAt !== undefined && !n.announcedAt && body.publishedAt) n.publishedAt = new Date(body.publishedAt);

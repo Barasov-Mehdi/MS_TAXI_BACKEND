@@ -125,3 +125,19 @@ describe('news', () => {
     expect(realtime.toDrivers).toHaveBeenCalledWith(null, 'news_deleted', { id: 'n4' });
   });
 });
+
+describe('news şəkli', () => {
+  test('şəkilli xəbər publicNews-da mütləq imageUrl ilə qayıdır', () => {
+    const n = news.publicNews({ _id: 'n9', title: 'T', body: 'B', imageId: '64b000000000000000000009', imageUrl: 'https://api.example.com/app/news-images/64b000000000000000000009', publishedAt: new Date() });
+    expect(n.imageUrl).toBe('https://api.example.com/app/news-images/64b000000000000000000009');
+  });
+  test('PUBLIC_API_URL varsa ünvan ondan qurulur', () => {
+    process.env.PUBLIC_API_URL = 'https://api.baras.az/';
+    const n = news.publicNews({ _id: 'n9', title: 'T', body: 'B', imageId: '64b000000000000000000009', imageUrl: 'https://old.host/x', publishedAt: new Date() });
+    expect(n.imageUrl).toBe('https://api.baras.az/app/news-images/64b000000000000000000009');
+    delete process.env.PUBLIC_API_URL;
+  });
+  test('şəkilsiz xəbərdə imageUrl null', () => {
+    expect(news.publicNews({ _id: 'n1', title: 'T', body: 'B', publishedAt: new Date() }).imageUrl).toBeNull();
+  });
+});

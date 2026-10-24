@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { ok, AppError } = require('../utils/errors');
 const appVersion = require('../services/appVersion.service');
+const newsImages = require('../services/newsImage.service');
 
 /**
  * Tətbiq versiyası (giriş tələb etmir: məcburi yeniləmə login ekranında da işləməlidir).
@@ -18,4 +19,16 @@ router.get('/version', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * "Yeniliklər" şəkilləri (giriş tələb etmir). server.js-də rate-limit-dən ƏVVƏL qoşulur:
+ * operatorun CGNAT-ında eyni IP-dən çoxlu sürücü şəkil yükləyəndə limitə düşməsin.
+ */
+const images = require('express').Router();
+images.get('/:id', async (req, res, next) => {
+  try {
+    await newsImages.stream(req.params.id, res);
+  } catch (e) { next(e); }
+});
+
 module.exports = router;
+module.exports.images = images;
