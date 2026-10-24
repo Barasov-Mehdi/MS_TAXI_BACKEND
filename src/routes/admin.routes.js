@@ -13,6 +13,8 @@ const walletService = require('../services/wallet.service');
 const pushService = require('../services/push.service');
 const dispatchService = require('../services/dispatch.service');
 const supportService = require('../services/support.service');
+const newsService = require('../services/news.service');
+const appVersion = require('../services/appVersion.service');
 const cityService = require('../services/city.service');
 const { publicUser } = require('../services/auth.service');
 const { normalizePhone } = require('../utils/validators');
@@ -1041,6 +1043,99 @@ router.patch('/settings', requireSuperAdmin, async (req, res, next) => {
     ok(res, { settings: await getSettings() });
   } catch (e) { next(e); }
 });
+
+// =============================================================== Yeniliklər (sürücü tətbiqində "Yeniliklər" bölməsi)
+// Baş admin: hamıya (cityId boş) və ya bir şəhərə. Regional admin: yalnız öz şəhərinə (cityId avtomatik).
+
+const newsBody = {
+  title: Joi.string().trim().min(2).max(120),
+  body: Joi.string().trim().min(2).max(4000),
+  kind: Joi.string().valid('info', 'promo', 'warning', 'update'),
+  cityId: objectId.allow(null, ''),
+  pinned: Joi.boolean(),
+  linkUrl: Joi.string().trim().uri({ scheme: ['https', 'http', 'tel', 'market'] }).max(500).allow(null, ''),
+  linkLabel: Joi.string().trim().max(40).allow(null, ''),
+  expiresAt: Joi.date().iso().allow(null, ''),
+};
+
+router.get('/news', async (req, res, next) => {
+  try {
+    ok(res, { news: await newsService.listForAdmin(scopeOf(req), { cityId: req.query.cityId, limit: req.query.limit }) });
+  } catch (e) { next(e); }
+});
+
+router.post(
+  '/news',
+  validated(Joi.object({
+    ...newsBody,
+    title: newsBody.title.required(),
+    body: newsBody.body.required(),
+    publishedAt: Joi.date().iso().allow(null, ''),
+    notify: Joi.boolean().default(true), // push bildirişi göndərilsin
+  })),
+  async (req, res, next) => {
+    try {
+      const r = await newsService.create(req.user, scopeOf(req), req.body);
+      await audit(req, 'NEWS_CREATE', 'News', r.news.id, null, { title: r.news.title, cityId: r.news.cityId, delivery: r.delivery });
+      ok(res, r, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+router.patch('/news/:id', validated(Joi.object(newsBody)), async (req, res, next) => {
+  try {
+    const n = await newsService.update(scopeOf(req), req.params.id, req.body);
+    await audit(req, 'NEWS_UPDATE', 'News', n.id, null, req.body);
+    ok(res, { news: n });
+  } catch (e) { next(e); }
+});
+
+router.delete('/news/:id', async (req, res, next) => {
+  try {
+    const r = await newsService.remove(scopeOf(req), req.params.id);
+    await audit(req, 'NEWS_DELETE', 'News', req.params.id, null, null);
+    ok(res, r);
+  } catch (e) { next(e); }
+});
+
+// =============================================================== Tətbiq versiyası (yalnız baş admin)
+// Play-ə yeni AAB yüklədikdən və yayımlandıqdan SONRA çağırın:
+//   PUT /admin/app-version { latestVersionCode: 4, latestVersionName: "3.1.0", minVersionCode: 3, notes: ["..."], notify: true }
+
+router.get('/app-version', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const info = await appVersion.getDriverAndroid();
+    const [outdated, total] = await Promise.all([
+      Driver.countDocuments({ deletedAt: null, appVersionCode: { $lt: info.latestVersionCode } }),
+      Driver.countDocuments({ deletedAt: null, appVersionCode: { $ne: null } }),
+    ]);
+    ok(res, { ...info, drivers: { reported: total, outdated } });
+  } catch (e) { next(e); }
+});
+
+router.put(
+  '/app-version',
+  requireSuperAdmin,
+  validated(Joi.object({
+    latestVersionCode: Joi.number().integer().min(1).required(),
+    latestVersionName: Joi.string().trim().max(30).required(),
+    minVersionCode: Joi.number().integer().min(1),
+    notes: Joi.alternatives(Joi.array().items(Joi.string().trim().max(200)).max(20), Joi.string().max(4000).allow('')),
+    storeUrl: Joi.string().trim().uri().max(500),
+    notify: Joi.boolean().default(false),
+  })),
+  async (req, res, next) => {
+    try {
+      const { notify, ...data } = req.body;
+      if (data.minVersionCode && data.minVersionCode > data.latestVersionCode) {
+        throw new AppError('VALIDATION_ERROR', 'minVersionCode latestVersionCode-dan böyük ola bilməz', 400);
+      }
+      const r = await appVersion.setDriverAndroid(data, { notify });
+      await audit(req, 'APP_VERSION_UPDATE', 'SystemSetting', null, null, { ...data, notify, notified: r.notified });
+      ok(res, r);
+    } catch (e) { next(e); }
+  }
+);
 
 // Əlavə bölmələr: sənədlər, namizəd sürücülər, sərnişinlər, canlı xəritə, hesabatlar, jurnal
 router.use(require('./admin.extra.routes'));

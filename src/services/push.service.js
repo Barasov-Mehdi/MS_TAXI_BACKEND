@@ -108,6 +108,8 @@ const CHANNEL = {
   trip: 'trip_updates',
   wallet: 'wallet_updates',
   account: 'account_updates',
+  news: 'news_updates',
+  app: 'app_updates',
 };
 
 /** Toxunanda açılacaq aktivitenin intent action-ı (AndroidManifest-dəki intent-filter ilə eyni). */
@@ -319,6 +321,34 @@ function notifyAccount(driverId, kind) {
   });
 }
 
+/** "Yeniliklər" bölməsinə yeni elan. Hamısı bir bildirişdə toplanır (tag), toxunanda Yeniliklər ekranı açılır. */
+function notifyNews(driverId, news) {
+  return sendNotification(driverId, {
+    title: clip(news.title, 80) || 'Yenilik',
+    body: news.body,
+    type: 'news',
+    channel: 'news',
+    tag: 'news',
+    data: { newsId: news.id },
+    ttlMs: 24 * 60 * 60 * 1000,
+  });
+}
+
+/** Play-də yeni versiya var. Toxunanda tətbiq açılır və yeniləmə pəncərəsi göstərilir. */
+function notifyAppUpdate(driverId, info) {
+  const name = info && info.latestVersionName ? ` ${info.latestVersionName}` : '';
+  const notes = info && Array.isArray(info.notes) && info.notes.length ? info.notes.slice(0, 3).join(' • ') : '';
+  return sendNotification(driverId, {
+    title: `Yeni versiya${name} mövcuddur`,
+    body: notes || 'Tətbiqi yeniləyin: yeni imkanlar və düzəlişlər.',
+    type: 'app_update',
+    channel: 'app',
+    tag: 'app_update',
+    data: { versionCode: info && info.latestVersionCode },
+    ttlMs: 3 * 24 * 60 * 60 * 1000,
+  });
+}
+
 /** Yeni təklif: payload dispatch.service.buildOfferPayload ilə eynidir. */
 function sendOffer(driverId, payload) {
   const expires = payload.offerExpiresAt ? new Date(payload.offerExpiresAt).getTime() : Date.now() + 20000;
@@ -375,6 +405,8 @@ module.exports = {
   notifyOrderRemoved,
   notifyBalanceChange,
   notifyAccount,
+  notifyNews,
+  notifyAppUpdate,
   sendToCustomer,
   CHANNEL,
   CLICK_ACTION,

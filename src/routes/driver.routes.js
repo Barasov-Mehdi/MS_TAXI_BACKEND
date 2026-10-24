@@ -14,6 +14,8 @@ const chatService = require('../services/chat.service');
 const cityService = require('../services/city.service');
 const supportService = require('../services/support.service');
 const documentService = require('../services/document.service');
+const newsService = require('../services/news.service');
+const appVersion = require('../services/appVersion.service');
 const realtime = require('../websocket/emitter');
 const adminFeed = require('../websocket/adminFeed');
 const multer = require('multer');
@@ -106,6 +108,8 @@ router.get('/me', async (req, res, next) => {
       // Şəhər + ofis məlumatı ("Ofislə əlaqə" bölməsi). null → sürücü şəhər seçməlidir.
       city: cityService.publicCity(await cityService.getCity(req.driver.cityId)),
       supportUnread: await supportService.unreadForDriver(req.driver._id),
+      // "Yeniliklər" bölməsində oxunmamış elan sayı
+      newsUnread: await newsService.unreadForDriver(req.driver),
       documents: (await documentService.listForDriver(req.driver._id)).summary,
     });
   } catch (e) { next(e); }
@@ -224,6 +228,22 @@ router.post('/support/read', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------------------------------------------------------------- Yeniliklər (elanlar)
+
+router.get('/news', async (req, res, next) => {
+  try {
+    const page = await newsService.listForDriver(req.driver, { before: req.query.before, limit: req.query.limit });
+    ok(res, { ...page, unread: await newsService.unreadForDriver(req.driver) });
+  } catch (e) { next(e); }
+});
+
+router.post('/news/read', async (req, res, next) => {
+  try {
+    await newsService.markReadByDriver(req.driver._id);
+    ok(res, { unread: 0 });
+  } catch (e) { next(e); }
+});
+
 router.post('/online', async (req, res, next) => {
   try {
     // Bloklanmış sürücüyə "təsdiqlənməyib" yox, bloklandığı bildirilir
@@ -279,6 +299,11 @@ router.post('/device-token', async (req, res, next) => {
     }
     await Driver.updateMany({ fcmToken: token, _id: { $ne: req.driver._id } }, { $set: { fcmToken: null } });
     await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: token, fcmTokenUpdatedAt: new Date() } });
+    // Tətbiq versiyası (köhnə versiyalı sürücülərə yeniləmə bildirişi göndərmək üçün)
+    await appVersion.rememberDriverVersion(req.driver._id, {
+      versionCode: req.body?.appVersionCode,
+      versionName: req.body?.appVersionName,
+    });
     ok(res, { saved: true });
   } catch (e) { next(e); }
 });

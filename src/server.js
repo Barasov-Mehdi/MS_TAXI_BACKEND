@@ -56,6 +56,7 @@ app.get('/', (req, res) => {
     meta: {},
   });
 });
+app.use('/app', require('./routes/app.routes'));
 app.use('/auth', require('./routes/auth.routes'));
 app.use('/customers', require('./routes/customer.routes'));
 app.use('/drivers', require('./routes/driver.routes'));

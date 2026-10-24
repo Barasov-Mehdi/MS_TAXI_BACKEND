@@ -39,6 +39,11 @@ const driverSchema = new mongoose.Schema(
     // select:false - API cavablarında (məs. /drivers/me) sızmasın.
     fcmToken: { type: String, default: null, select: false },
     fcmTokenUpdatedAt: { type: Date, default: null },
+    // Cihazdakı tətbiq versiyası (device-token ilə gəlir): köhnə versiyalı sürücülərə yeniləmə bildirişi üçün
+    appVersionCode: { type: Number, default: null },
+    appVersionName: { type: String, default: null },
+    // "Yeniliklər" bölməsinə son baxış vaxtı (oxunmamış sayı bundan sonrakı xəbərlərdir)
+    newsSeenAt: { type: Date, default: null },
     // Silinmiş sürücü (yumşaq silmə): siyahılarda görünmür, sifariş/qazanc tarixçəsi qalır
     deletedAt: { type: Date, default: null, index: true },
     deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

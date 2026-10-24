@@ -36,6 +36,16 @@ const DEFAULTS = {
   cancellationFeeMinor: 0,
   // Sürücü qəbul etdiyi sifarişi ləğv edəndə sifariş bu qədər dəfəyə qədər yenidən axtarışa qaytarılır
   maxRedispatch: 5,
+
+  // ---- Sürücü tətbiqi (Android) versiyası: GET /app/version ----
+  // Play-ə yeni versiya yüklədikdən sonra admin paneldən (PUT /admin/app-version) yenilənir.
+  // latest > cihazdakı versionCode → "Yeni versiya var" (bağlana bilər)
+  // min    > cihazdakı versionCode → məcburi yeniləmə (tətbiq bloklanır)
+  driverAndroidLatestCode: 3,
+  driverAndroidLatestName: '3.0.0',
+  driverAndroidMinCode: 1,
+  driverAndroidNotes: [],
+  driverAndroidStoreUrl: 'https://play.google.com/store/apps/details?id=com.barasdrivers',
 };
 
 let cache = null;

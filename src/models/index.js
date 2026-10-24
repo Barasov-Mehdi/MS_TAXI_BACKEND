@@ -24,4 +24,5 @@ module.exports = {
   SupportMessage: require('./SupportMessage'),
   DriverDeleteRequest: require('./DriverDeleteRequest'),
   DriverDocument: require('./DriverDocument'),
+  News: require('./News'),
 };
