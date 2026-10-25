@@ -132,3 +132,48 @@ test('delete-request: geri götürmək', async () => {
   expect(r.status).toBe(200);
   expect(mockModels.DriverDeleteRequest.findOneAndUpdate.mock.calls[0][0]).toMatchObject({ driverId: DRV, status: 'PENDING', selfRequested: true });
 });
+
+describe('nəticələr (gün / həftə / ay / il)', () => {
+  const { periodRange, bucketKeys } = require('../src/routes/driver.routes')._test;
+  // 2026-10-25 21:00 Bakı = 17:00 UTC, bazar günü
+  const now = new Date('2026-10-25T17:00:00Z');
+
+  test('dövr sərhədləri Bakı vaxtı ilə', () => {
+    expect(periodRange('day', 0, now).from.toISOString()).toBe('2026-10-24T20:00:00.000Z');
+    expect(periodRange('day', 1, now).from.toISOString()).toBe('2026-10-23T20:00:00.000Z');
+    // həftə bazar ertəsindən: 19 okt
+    expect(periodRange('week', 0, now).from.toISOString()).toBe('2026-10-18T20:00:00.000Z');
+    expect(periodRange('week', 0, now).to.toISOString()).toBe('2026-10-25T20:00:00.000Z');
+    expect(periodRange('month', 0, now).from.toISOString()).toBe('2026-09-30T20:00:00.000Z');
+    expect(periodRange('month', 10, now).from.toISOString()).toBe('2025-11-30T20:00:00.000Z');
+    expect(periodRange('year', 0, now).from.toISOString()).toBe('2025-12-31T20:00:00.000Z');
+  });
+
+  test('qrafik sütunları', () => {
+    const w = periodRange('week', 0, now);
+    expect(bucketKeys('week', w.from, w.to)).toEqual([
+      '2026-10-19', '2026-10-20', '2026-10-21', '2026-10-22', '2026-10-23', '2026-10-24', '2026-10-25',
+    ]);
+    const m = periodRange('month', 0, now);
+    expect(bucketKeys('month', m.from, m.to)).toHaveLength(31);
+    expect(bucketKeys('day', 0, 0)).toHaveLength(24);
+    const y = periodRange('year', 0, now);
+    expect(bucketKeys('year', y.from, y.to)[0]).toBe('2026-01');
+  });
+
+  test('endpoint: cəmlər, müqayisə və sıra', async () => {
+    mockModels.TripEarning.aggregate
+      .mockResolvedValueOnce([{ trips: 4, grossMinor: 4000, commissionMinor: 400, netMinor: 3600, distanceMeters: 20000, durationMin: 60, cashMinor: 4000 }])
+      .mockResolvedValueOnce([{ trips: 2, netMinor: 1800 }])
+      .mockResolvedValueOnce([{ _id: '09', trips: 1, netMinor: 900 }, { _id: '14', trips: 3, netMinor: 2700 }]);
+    mockModels.OrderStatusHistory.countDocuments.mockResolvedValue(1);
+    const r = await request(app()).get('/drivers/results?period=day');
+    expect(r.status).toBe(200);
+    const d = r.body.data;
+    expect(d.totals).toMatchObject({ trips: 4, netMinor: 3600, avgPerTripMinor: 900, cancelled: 1 });
+    expect(d.changePct).toBe(100);
+    expect(d.series).toHaveLength(24);
+    expect(d.series[14]).toEqual({ key: '14', trips: 3, netMinor: 2700 });
+    expect(d.best.key).toBe('14');
+  });
+});

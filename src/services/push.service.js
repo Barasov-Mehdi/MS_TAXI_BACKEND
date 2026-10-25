@@ -184,14 +184,42 @@ async function sendToDriver(driverId, data, { ttlMs = 30000 } = {}) {
 // Bildirişlər (notification + data)
 // ---------------------------------------------------------------------------------------------
 
-/** Android bildiriş kanalları: android/.../notify/NotifyInitProvider.kt ilə EYNİ id-lər olmalıdır. */
+/**
+ * Sürücü tətbiqinin bildiriş kanalları — hər növün ÖZ SƏSİ var (res/raw/snd_*.ogg).
+ * Id-lər sürücü tətbiqindəki android/.../notify/NotifySounds.kt ilə EYNİ olmalıdır.
+ * `sound` — Android 7 və aşağı üçün (8+ səsi kanal təyin edir).
+ */
 const CHANNEL = {
-  chat: 'chat_messages',
-  trip: 'trip_updates',
-  wallet: 'wallet_updates',
-  account: 'account_updates',
-  news: 'news_updates',
-  app: 'app_updates',
+  chat: 'd_chat',
+  trip: 'd_trip',
+  cancel: 'd_cancel',
+  support: 'd_support',
+  wallet: 'd_wallet',
+  account: 'd_account',
+  news: 'd_news',
+  app: 'd_app',
+};
+const CHANNEL_SOUND = {
+  d_chat: 'snd_chat',
+  d_trip: 'snd_order',
+  d_cancel: 'snd_cancel',
+  d_support: 'snd_support',
+  d_wallet: 'snd_wallet',
+  d_account: 'snd_account',
+  d_news: 'snd_news',
+  d_app: 'snd_app',
+};
+/** Bildiriş növünə görə kanal (çağırışdakı `channel`-dan üstündür): ləğv və ofis mesajı ayrıca səslə gəlsin. */
+const CHANNEL_BY_TYPE = {
+  order_cancelled: 'cancel',
+  order_removed: 'cancel',
+  support_message: 'support',
+  chat_message: 'chat',
+  documents: 'account',
+  account_status: 'account',
+  wallet_update: 'wallet',
+  news: 'news',
+  app_update: 'app',
 };
 
 /** Toxunanda açılacaq aktivitenin intent action-ı (AndroidManifest-dəki intent-filter ilə eyni). */
@@ -217,6 +245,7 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
 
   const payload = { type: str(type) };
   for (const [k, v] of Object.entries(data)) payload[k] = str(v); // FCM data dəyərləri yalnız string ola bilər
+  const channelId = CHANNEL[CHANNEL_BY_TYPE[type] || channel] || CHANNEL.trip;
 
   try {
     await sendVia('driver', m, {
@@ -232,9 +261,9 @@ async function sendNotification(driverId, { title, body, type, channel = 'trip',
         priority: 'high',
         ttl: Math.max(1000, ttlMs),
         notification: {
-          channelId: CHANNEL[channel] || CHANNEL.trip,
+          channelId,
           clickAction: CLICK_ACTION,
-          sound: 'default',
+          sound: CHANNEL_SOUND[channelId] || 'default',
           defaultVibrateTimings: true,
           ...(tag ? { tag: String(tag).slice(0, 100) } : {}),
         },

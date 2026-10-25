@@ -577,6 +577,140 @@ router.get('/profile/summary', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// =============================================================== Nəticələr (gün / həftə / ay / il)
+// GET /drivers/results?period=day|week|month|year&offset=0
+//  offset: 0 → cari dövr, 1 → əvvəlki (dünən / keçən həftə ...). Hesablamalar STATS_TZ (Bakı) vaxtı ilə.
+// Cavab: dövrün sərhədləri, cəmlər (TripEarning jurnalından), əvvəlki dövrlə müqayisə, qrafik üçün sıra.
+const RESULT_PERIODS = ['day', 'week', 'month', 'year'];
+
+function tzParts(date) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone: STATS_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+      weekday: 'short', hourCycle: 'h23',
+    }).formatToParts(date).map((x) => [x.type, x.value])
+  );
+  return { y: +p.year, m: +p.month - 1, d: +p.day, h: +p.hour, mi: +p.minute, s: +p.second, wd: p.weekday };
+}
+// Saat qurşağının UTC-dən fərqi (ms) verilən anda
+function tzOffsetMs(date) {
+  const t = tzParts(date);
+  return Date.UTC(t.y, t.m, t.d, t.h, t.mi, t.s) - Math.floor(date.getTime() / 1000) * 1000;
+}
+// Yerli (STATS_TZ) tarixin gecə yarısı → UTC an. Date.UTC ay/gün daşmasını özü düzəldir.
+function localMidnight(y, m, d) {
+  const guess = new Date(Date.UTC(y, m, d));
+  return new Date(guess.getTime() - tzOffsetMs(guess));
+}
+const WD = { Mon: 0, Tue: 1, Wed: 2, Thu: 3, Fri: 4, Sat: 5, Sun: 6 };
+
+function periodRange(period, offset, now = new Date()) {
+  const t = tzParts(now);
+  if (period === 'day') return { from: localMidnight(t.y, t.m, t.d - offset), to: localMidnight(t.y, t.m, t.d - offset + 1) };
+  if (period === 'week') {
+    const mon = t.d - WD[t.wd] - offset * 7; // həftə bazar ertəsindən başlayır
+    return { from: localMidnight(t.y, t.m, mon), to: localMidnight(t.y, t.m, mon + 7) };
+  }
+  if (period === 'month') return { from: localMidnight(t.y, t.m - offset, 1), to: localMidnight(t.y, t.m - offset + 1, 1) };
+  return { from: localMidnight(t.y - offset, 0, 1), to: localMidnight(t.y - offset + 1, 0, 1) };
+}
+
+/** Qrafik sütunları: gün → saatlar, həftə/ay → günlər, il → aylar (boş olanlar da daxil). */
+function bucketKeys(period, from, to) {
+  if (period === 'day') return Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'));
+  const keys = [];
+  if (period === 'year') {
+    const y = tzParts(new Date(from.getTime() + 12 * 3600000)).y;
+    for (let m = 1; m <= 12; m++) keys.push(`${y}-${String(m).padStart(2, '0')}`);
+    return keys;
+  }
+  for (let t = from.getTime() + 12 * 3600000; t < to.getTime(); t += 86400000) keys.push(dayKey(new Date(t)));
+  return keys;
+}
+
+async function periodTotals(driverId, from, to) {
+  const [row] = await TripEarning.aggregate([
+    { $match: { driverId, completedAt: { $gte: from, $lt: to } } },
+    {
+      $group: {
+        _id: null,
+        trips: { $sum: 1 },
+        grossMinor: { $sum: '$grossMinor' },
+        commissionMinor: { $sum: '$commissionMinor' },
+        netMinor: { $sum: '$netMinor' },
+        distanceMeters: { $sum: '$distanceMeters' },
+        durationMin: { $sum: '$durationMin' },
+        cashMinor: { $sum: { $cond: [{ $eq: ['$paymentMethod', 'CASH'] }, '$grossMinor', 0] } },
+      },
+    },
+  ]);
+  const r = row || {};
+  const trips = r.trips || 0;
+  return {
+    trips,
+    grossMinor: r.grossMinor || 0,
+    commissionMinor: r.commissionMinor || 0,
+    netMinor: r.netMinor || 0,
+    distanceMeters: r.distanceMeters || 0,
+    durationMin: r.durationMin || 0,
+    cashMinor: r.cashMinor || 0,
+    avgPerTripMinor: trips ? Math.round((r.netMinor || 0) / trips) : 0,
+  };
+}
+
+router.get('/results', async (req, res, next) => {
+  try {
+    const period = RESULT_PERIODS.includes(req.query.period) ? req.query.period : 'day';
+    const offset = Math.min(Math.max(parseInt(req.query.offset, 10) || 0, 0), period === 'day' ? 400 : period === 'week' ? 104 : 36);
+    const driverId = req.driver._id;
+    const { from, to } = periodRange(period, offset);
+    const prev = periodRange(period, offset + 1);
+    const fmt = period === 'day' ? '%H' : period === 'year' ? '%Y-%m' : '%Y-%m-%d';
+
+    const [totals, previous, rows, cancelled] = await Promise.all([
+      periodTotals(driverId, from, to),
+      periodTotals(driverId, prev.from, prev.to),
+      TripEarning.aggregate([
+        { $match: { driverId, completedAt: { $gte: from, $lt: to } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: fmt, date: '$completedAt', timezone: STATS_TZ } },
+            trips: { $sum: 1 },
+            netMinor: { $sum: '$netMinor' },
+          },
+        },
+      ]),
+      OrderStatusHistory.countDocuments({
+        actorId: req.user._id,
+        actorRole: 'DRIVER',
+        toStatus: { $in: [OrderStatus.DRIVER_CANCELLED, OrderStatus.SEARCHING_DRIVER] },
+        createdAt: { $gte: from, $lt: to },
+      }),
+    ]);
+    const byKey = new Map(rows.map((r) => [r._id, r]));
+    const series = bucketKeys(period, from, to).map((key) => ({
+      key,
+      trips: byKey.get(key)?.trips || 0,
+      netMinor: byKey.get(key)?.netMinor || 0,
+    }));
+    const best = series.reduce((b, x) => (x.netMinor > (b ? b.netMinor : 0) ? x : b), null);
+
+    ok(res, {
+      period,
+      offset,
+      timezone: STATS_TZ,
+      tzOffsetMin: Math.round(tzOffsetMs(from) / 60000),
+      from,
+      to,
+      totals: { ...totals, cancelled },
+      previous,
+      changePct: previous.netMinor ? Math.round(((totals.netMinor - previous.netMinor) / Math.abs(previous.netMinor)) * 100) : null,
+      series,
+      best: best ? { key: best.key, netMinor: best.netMinor, trips: best.trips } : null,
+    });
+  } catch (e) { next(e); }
+});
+
 // =============================================================== Hesabı silmə sorğusu (sürücünün özü)
 // Google Play tələbi: istifadəçi hesabının silinməsini tətbiqin içindən istəyə bilməlidir.
 // Sorğu admin paneldəki "Silmə sorğuları" siyahısına düşür; baş admin təsdiqləyəndə hesab silinir.
@@ -885,3 +1019,4 @@ router.get('/wallet/transactions', async (req, res, next) => {
 });
 
 module.exports = router;
+module.exports._test = { periodRange, bucketKeys };

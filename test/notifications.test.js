@@ -41,7 +41,7 @@ test('çat bildirişi: kanal, click_action, tag və string data', async () => {
   expect(msg.data).toEqual({ type: 'chat_message', orderId: 'o1', messageId: 'm1' });
   expect(msg.android.priority).toBe('high');
   expect(msg.android.notification).toMatchObject({
-    channelId: 'chat_messages', clickAction: push.CLICK_ACTION, tag: 'chat_o1',
+    channelId: 'd_chat', sound: 'snd_chat', clickAction: push.CLICK_ACTION, tag: 'chat_o1',
   });
   Object.values(msg.data).forEach((v) => expect(typeof v).toBe('string'));
 });
@@ -61,7 +61,8 @@ test('balans bildirişi məbləği düzgün göstərir', async () => {
   expect(m.notification.title).toBe('Balans artırıldı');
   expect(m.notification.body).toContain('+10.00 ₼');
   expect(m.notification.body).toContain('23.50 ₼');
-  expect(m.android.notification.channelId).toBe('wallet_updates');
+  expect(m.android.notification.channelId).toBe('d_wallet');
+  expect(m.android.notification.sound).toBe('snd_wallet');
 });
 
 test('token yoxdursa göndərilmir', async () => {
@@ -115,4 +116,15 @@ test('başqa layihənin tokeni: digər açarla təkrar cəhd (layihə köçürm�
   mockSend.mockRejectedValue({ code: 'messaging/mismatched-credential' });
   expect(await push.notifyQueuedOrder('d1', 'o1')).toBe(false);
   expect(mockSend).toHaveBeenCalledTimes(1);
+});
+
+test('hər bildiriş növü öz kanalı və səsi ilə gedir', async () => {
+  mockSend.mockResolvedValue('id');
+  await push.notifyOrderCancelled('d1', 'o1', 'CUSTOMER');
+  await push.notifySupportMessage('d1', { messageId: 'm1', adminName: 'Ofis', text: 'Salam' });
+  await push.notifyQueuedOrder('d1', 'o2');
+  const n = mockSend.mock.calls.map((c) => c[0].android.notification);
+  expect(n[0]).toMatchObject({ channelId: 'd_cancel', sound: 'snd_cancel' });
+  expect(n[1]).toMatchObject({ channelId: 'd_support', sound: 'snd_support' });
+  expect(n[2]).toMatchObject({ channelId: 'd_trip', sound: 'snd_order' });
 });
