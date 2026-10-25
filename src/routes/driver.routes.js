@@ -7,7 +7,10 @@ const { getSettings } = require('../services/settings.service');
 const orderService = require('../services/order.service');
 const dispatchService = require('../services/dispatch.service');
 const locationService = require('../services/location.service');
-const { Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver, TripEarning } = require('../models');
+const {
+  Order, Vehicle, WalletTransaction, OrderIssue, Customer, User, Driver, TripEarning,
+  Rating, OrderStatusHistory, DriverDeleteRequest,
+} = require('../models');
 const { OrderStatus } = require('../utils/orderStatus');
 const { publicUser } = require('../services/auth.service');
 const chatService = require('../services/chat.service');
@@ -253,6 +256,10 @@ router.post('/online', async (req, res, next) => {
     if (!req.driver.isVerified) {
       throw new AppError('DRIVER_NOT_VERIFIED', 'Hesabınız hələ administrator tərəfindən təsdiqlənməyib', 403);
     }
+    // Sürücü hesabının silinməsini istəyibsə (gözləyir) yeni sifariş almır
+    if (await DriverDeleteRequest.exists({ driverId: req.driver._id, status: 'PENDING', selfRequested: true })) {
+      throw new AppError('DELETE_PENDING', 'Hesab silmə sorğunuz gözləyir. Onlayn olmaq üçün sorğunu Profildən geri götürün', 403);
+    }
     // Balans çatmırsa sürücü onlayn olub heç vaxt sifariş almazdı (matching LOW_BALANCE ilə atlayır): açıq xəta göstərilir.
     const st = await getSettings();
     if (!st.negativeBalanceAllowed && (req.driver.walletBalanceMinor || 0) < (st.minimumDriverBalance || 0)) {
@@ -452,6 +459,181 @@ router.get('/stats', async (req, res, next) => {
       };
     });
     ok(res, { timezone: STATS_TZ, today: list[0], days: list });
+  } catch (e) { next(e); }
+});
+
+// =============================================================== Profil xülasəsi
+// Sürücü profilindəki "Göstəricilər", "Reytinq" və "Hesab" bölmələri üçün bir sorğu:
+//  - ümumi: səfər sayı, qazanc, komissiya, məsafə (TripEarning jurnalından — sifariş silinsə də itmir)
+//  - son 30 gün: təklif, qəbul, ləğv sayı və faizləri, tamamlanan səfərlər
+//  - reytinq bölgüsü (1–5 ulduz) və son şərhlər (sərnişin adı göstərilmir)
+//  - hesab silmə sorğusunun vəziyyəti
+const PERF_DAYS = 30;
+
+function pct(part, whole) {
+  if (!whole) return null;
+  return Math.max(0, Math.min(100, Math.round((part / whole) * 100)));
+}
+
+router.get('/profile/summary', async (req, res, next) => {
+  try {
+    const driverId = req.driver._id;
+    const userId = req.user._id;
+    const since = new Date(Date.now() - PERF_DAYS * 86400000);
+
+    const [totalsAgg, recentAgg, offered, accepted, cancelled, ratingAgg, recentRatings, deleteRequest] = await Promise.all([
+      TripEarning.aggregate([
+        { $match: { driverId } },
+        {
+          $group: {
+            _id: null,
+            trips: { $sum: 1 },
+            grossMinor: { $sum: '$grossMinor' },
+            commissionMinor: { $sum: '$commissionMinor' },
+            netMinor: { $sum: '$netMinor' },
+            distanceMeters: { $sum: '$distanceMeters' },
+            durationMin: { $sum: '$durationMin' },
+            first: { $min: '$completedAt' },
+          },
+        },
+      ]),
+      TripEarning.aggregate([
+        { $match: { driverId, completedAt: { $gte: since } } },
+        { $group: { _id: null, trips: { $sum: 1 }, netMinor: { $sum: '$netMinor' } } },
+      ]),
+      // Sürücüyə göstərilən təkliflər (dispatch hər təklifdə offeredToDriverIds-ə əlavə edir)
+      Order.countDocuments({ offeredToDriverIds: driverId, createdAt: { $gte: since } }),
+      // Qəbul: SEARCHING_DRIVER → (təyin olundu / növbə) keçidini sürücü özü edib
+      OrderStatusHistory.countDocuments({
+        actorId: userId,
+        actorRole: 'DRIVER',
+        fromStatus: OrderStatus.SEARCHING_DRIVER,
+        createdAt: { $gte: since },
+      }),
+      // Ləğv: qəbuldan sonra sürücü imtina edib (sifariş növbəti sürücüyə keçib və ya ləğv olunub)
+      OrderStatusHistory.countDocuments({
+        actorId: userId,
+        actorRole: 'DRIVER',
+        toStatus: { $in: [OrderStatus.DRIVER_CANCELLED, OrderStatus.SEARCHING_DRIVER] },
+        createdAt: { $gte: since },
+      }),
+      Rating.aggregate([{ $match: { driverId } }, { $group: { _id: '$score', n: { $sum: 1 } } }]),
+      Rating.find({ driverId, comment: { $nin: [null, ''] } })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .select('score comment createdAt')
+        .lean(),
+      DriverDeleteRequest.findOne({ driverId }).sort({ createdAt: -1 }).select('status reason createdAt reviewNote selfRequested').lean(),
+    ]);
+
+    const t = totalsAgg[0] || {};
+    const r = recentAgg[0] || {};
+    const breakdown = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    for (const row of ratingAgg) {
+      const k = Math.round(Number(row._id));
+      if (breakdown[k] !== undefined) breakdown[k] += row.n;
+    }
+    // Təklif sayı köhnə məlumatda qəbul sayından az ola bilər (təklif siyahısı sonradan əlavə olunub)
+    const offers = Math.max(offered, accepted);
+
+    ok(res, {
+      driverCode: `D-${String(driverId).slice(-6).toUpperCase()}`,
+      memberSince: req.driver.createdAt || req.user.createdAt || null,
+      firstTripAt: t.first || null,
+      totals: {
+        trips: t.trips || 0,
+        grossMinor: t.grossMinor || 0,
+        commissionMinor: t.commissionMinor || 0,
+        netMinor: t.netMinor || 0,
+        distanceMeters: t.distanceMeters || 0,
+        durationMin: t.durationMin || 0,
+      },
+      performance: {
+        days: PERF_DAYS,
+        trips: r.trips || 0,
+        netMinor: r.netMinor || 0,
+        offers,
+        accepted,
+        cancelled,
+        acceptanceRate: pct(accepted, offers),
+        cancellationRate: pct(cancelled, accepted),
+      },
+      ratings: {
+        avg: req.driver.ratingAvg ?? null,
+        count: req.driver.ratingCount || 0,
+        breakdown,
+        recent: recentRatings.map((x) => ({ score: x.score, comment: x.comment, createdAt: x.createdAt })),
+      },
+      deleteRequest: deleteRequest
+        ? {
+            status: deleteRequest.status,
+            reason: deleteRequest.reason,
+            createdAt: deleteRequest.createdAt,
+            reviewNote: deleteRequest.reviewNote || '',
+            selfRequested: Boolean(deleteRequest.selfRequested),
+          }
+        : null,
+    });
+  } catch (e) { next(e); }
+});
+
+// =============================================================== Hesabı silmə sorğusu (sürücünün özü)
+// Google Play tələbi: istifadəçi hesabının silinməsini tətbiqin içindən istəyə bilməlidir.
+// Sorğu admin paneldəki "Silmə sorğuları" siyahısına düşür; baş admin təsdiqləyəndə hesab silinir.
+router.post(
+  '/me/delete-request',
+  validated(Joi.object({ reason: Joi.string().trim().min(3).max(500).required().messages({
+    'string.min': 'Səbəbi qısaca yazın',
+    'any.required': 'Səbəbi qısaca yazın',
+    'string.empty': 'Səbəbi qısaca yazın',
+  }) })),
+  async (req, res, next) => {
+    try {
+      if (req.driver.currentOrderId) {
+        throw new AppError('ACTIVE_ORDER', 'Aktiv sifariş bitənə qədər hesabı silmək olmaz', 409);
+      }
+      const name = [req.user.firstName, req.user.lastName].filter(Boolean).join(' ').trim();
+      let request;
+      try {
+        request = await DriverDeleteRequest.create({
+          driverId: req.driver._id,
+          cityId: req.driver.cityId || null,
+          requestedBy: req.user._id,
+          requestedByName: name ? `${name} (sürücü)` : 'Sürücü',
+          reason: req.body.reason,
+          selfRequested: true,
+          driverName: name,
+          driverPhone: req.user.phone || '',
+        });
+      } catch (e) {
+        if (e && e.code === 11000) throw new AppError('REQUEST_EXISTS', 'Silmə sorğunuz artıq göndərilib', 409);
+        throw e;
+      }
+      // Sorğu göndərilibsə sürücü oflayn olur: yeni sifariş gəlməsin
+      if (req.driver.isOnline) {
+        await Driver.updateOne({ _id: req.driver._id }, { $set: { isOnline: false, onlineSince: null } });
+      }
+      try {
+        realtime.toAdmin('delete_request', { request, cityName: '' });
+      } catch (_) { /* admin paneli bağlı ola bilər */ }
+      ok(res, { request: { status: request.status, reason: request.reason, createdAt: request.createdAt, selfRequested: true } }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
+
+/** Sürücü öz gözləyən sorğusunu geri götürür. */
+router.delete('/me/delete-request', async (req, res, next) => {
+  try {
+    const r = await DriverDeleteRequest.findOneAndUpdate(
+      { driverId: req.driver._id, status: 'PENDING', selfRequested: true },
+      { $set: { status: 'CANCELLED', reviewedBy: req.user._id, reviewedAt: new Date() } },
+      { new: true }
+    );
+    if (!r) throw new AppError('NOT_FOUND', 'Gözləyən sorğu tapılmadı', 404);
+    try {
+      realtime.toAdminCity(r.cityId, 'delete_request_updated', { request: r });
+    } catch (_) { /* */ }
+    ok(res, { cancelled: true });
   } catch (e) { next(e); }
 });
 

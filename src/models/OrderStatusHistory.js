@@ -1,8 +1,6 @@
 const mongoose = require('mongoose');
 
-module.exports = mongoose.model(
-  'OrderStatusHistory',
-  new mongoose.Schema({
+const schema = new mongoose.Schema({
     orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true, index: true },
     fromStatus: String,
     toStatus: { type: String, required: true },
@@ -10,5 +8,9 @@ module.exports = mongoose.model(
     actorId: mongoose.Schema.Types.ObjectId,
     reason: String,
     createdAt: { type: Date, default: Date.now },
-  })
-);
+});
+
+// Sürücü profili statistikası (qəbul / ləğv faizi) üçün: aktyora görə son qeydlər
+schema.index({ actorId: 1, createdAt: -1 });
+
+module.exports = mongoose.model('OrderStatusHistory', schema);

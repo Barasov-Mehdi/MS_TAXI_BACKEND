@@ -101,6 +101,8 @@ orderSchema.index({ customerId: 1, createdAt: -1 });
 orderSchema.index({ driverId: 1, status: 1 });
 orderSchema.index({ status: 1, dispatchDueAt: 1 });
 orderSchema.index({ status: 1, currentOfferDriverId: 1 });
+// Sürücü profili: son 30 gündə neçə təklif aldığı (qəbul faizi)
+orderSchema.index({ offeredToDriverIds: 1, createdAt: -1 });
 // Eyni Idempotency-Key ilə paralel sorğular iki sifariş yarada bilməsin.
 orderSchema.index(
   { customerId: 1, idempotencyKey: 1 },

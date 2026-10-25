@@ -11,6 +11,8 @@ const schema = new mongoose.Schema(
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     requestedByName: { type: String, default: '' },
     reason: { type: String, required: true, maxlength: 500 },
+    // true: sorğunu sürücü özü tətbiqdən göndərib (Google Play: hesabın tətbiqdən silinməsi tələbi)
+    selfRequested: { type: Boolean, default: false },
     status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'], default: 'PENDING', index: true },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reviewedAt: { type: Date, default: null },
