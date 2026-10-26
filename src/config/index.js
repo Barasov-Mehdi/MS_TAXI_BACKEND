@@ -15,6 +15,9 @@ const config = {
     // Giriş nömrə ilə olduğu üçün access token qısa qalır, refresh token isə 30 gün.
     accessTtl: process.env.JWT_ACCESS_TTL || '15m',
     refreshTtl: process.env.JWT_REFRESH_TTL || '30d',
+    // Cihaz tokeni (yalnız native tərəf üçün): ekran kilidli / tətbiq arxa planda olanda sifarişi qəbul/rədd etmək
+    // və mövqe göndərmək üçün. Yalnız bir neçə endpoint-ə icazə verir (middleware/auth.js → DEVICE_ROUTES).
+    deviceTtl: process.env.JWT_DEVICE_TTL || '30d',
   },
   corsOrigin: process.env.CORS_ORIGIN
     ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)

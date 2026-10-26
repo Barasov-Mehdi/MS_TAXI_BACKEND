@@ -188,8 +188,15 @@ async function advanceOffer(orderId, { reason = 'START', onlyIfDue = false, expe
       [...(order.offeredToDriverIds || []), ...rejectedIds],
       [...rejectedIds, ...(order.currentOfferDriverId ? [order.currentOfferDriverId] : [])],
     ];
+    // Hər turda əvvəl təzə/dəqiq koordinatlı sürücülər, tapılmasa ehtiyat (relaxed) axtarış: koordinatı 5 dəq-ə qədər
+    // köhnə / GPS dəqiqliyi zəif, amma tətbiqi canlı olan sürücü (ekran sönülü, dayanıb). Əvvəl belə sürücü atlanırdı və
+    // yeganə onlayn sürücü olsa belə sifariş ona yalnız təzə GPS ölçməsi gələndə (bəzən dəqiqələr sonra) çatırdı.
+    const passes = [];
     for (const excludeIds of rounds) {
-      const candidates = await matchingService.findEligibleDrivers(plng, plat, { excludeIds });
+      passes.push({ excludeIds, relaxed: false }, { excludeIds, relaxed: true });
+    }
+    for (const pass of passes) {
+      const candidates = await matchingService.findEligibleDrivers(plng, plat, pass);
       for (const candidate of candidates) {
         if (await claimDriverForOffer(candidate.driver._id, order._id, offerExpiresAt, now)) {
           next = candidate;

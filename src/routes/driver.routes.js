@@ -327,9 +327,25 @@ router.post('/push-test', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/**
+ * Native cihaz tokeni: Kotlin tərəfi (tam ekran təklif, arxa plan mövqe servisi) bunu istifadə edir.
+ * JS 15 dəqiqəlik access tokeni arxa planda yeniləyə bilmir (Android-də JS taymerləri dayanır), ona görə
+ * qəbul / rədd / mövqe bu uzunömürlü, yalnız bir neçə endpoint-ə icazəli tokenlə gedir. Hər çağırış köhnəsini ləğv edir.
+ */
+router.post('/device-session', async (req, res, next) => {
+  try {
+    if (req.authScope === 'device') throw new AppError('FORBIDDEN', 'Not allowed', 403);
+    const crypto = require('crypto');
+    const { signDevice } = require('../services/auth.service');
+    const sid = crypto.randomBytes(16).toString('hex');
+    await Driver.updateOne({ _id: req.driver._id }, { $set: { deviceSessionId: sid } });
+    ok(res, { deviceToken: signDevice(req.user, sid) });
+  } catch (e) { next(e); }
+});
+
 router.delete('/device-token', async (req, res, next) => {
   try {
-    await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: null } });
+    await Driver.updateOne({ _id: req.driver._id }, { $set: { fcmToken: null, deviceSessionId: null } });
     ok(res, { removed: true });
   } catch (e) { next(e); }
 });

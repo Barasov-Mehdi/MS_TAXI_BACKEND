@@ -39,6 +39,8 @@ const driverSchema = new mongoose.Schema(
     // select:false - API cavablarında (məs. /drivers/me) sızmasın.
     fcmToken: { type: String, default: null, select: false },
     fcmTokenUpdatedAt: { type: Date, default: null },
+    // Native cihaz tokeninin (scope=device) aktiv sessiya id-si. Yeni token alınanda / çıxışda dəyişir.
+    deviceSessionId: { type: String, default: null, select: false },
     // Cihazdakı tətbiq versiyası (device-token ilə gəlir): köhnə versiyalı sürücülərə yeniləmə bildirişi üçün
     appVersionCode: { type: Number, default: null },
     appVersionName: { type: String, default: null },

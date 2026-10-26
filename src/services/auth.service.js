@@ -14,6 +14,21 @@ function signAccess(user) {
   });
 }
 
+/** Cihaz tokeninin imza açarı access tokendən fərqlidir: adi endpoint-lər onu qəbul etmir. */
+function deviceSecret() {
+  return `${config.jwt.accessSecret}:device`;
+}
+
+/**
+ * Native (Kotlin) tərəfin uzunömürlü, məhdud səlahiyyətli tokeni. `sid` Driver.deviceSessionId ilə yoxlanılır:
+ * yeni token alınanda / çıxış ediləndə köhnəsi dərhal etibarsız olur.
+ */
+function signDevice(user, sid) {
+  return jwt.sign({ sub: String(user._id), role: user.role, scope: 'device', sid }, deviceSecret(), {
+    expiresIn: config.jwt.deviceTtl,
+  });
+}
+
 function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
@@ -167,7 +182,11 @@ async function refresh(refreshToken) {
 
 async function logout(refreshToken) {
   if (!refreshToken) return;
-  await RefreshToken.updateOne({ tokenHash: hashToken(refreshToken) }, { revoked: true });
+  const row = await RefreshToken.findOneAndUpdate({ tokenHash: hashToken(refreshToken) }, { revoked: true });
+  // Çıxış: native cihaz tokeni də etibarsız olsun
+  if (row && row.userId) {
+    await Driver.updateOne({ userId: row.userId }, { $set: { deviceSessionId: null } }).catch(() => {});
+  }
 }
 
 async function verifyPhone(userId, code) {
@@ -265,4 +284,4 @@ function publicUser(user) {
   };
 }
 
-module.exports = { register, requestRegisterOtp, login, loginWithOtp, refresh, logout, verifyPhone, resendVerification, requestPasswordReset, resetPassword, changePassword, publicUser, signAccess };
+module.exports = { register, requestRegisterOtp, login, loginWithOtp, refresh, logout, verifyPhone, resendVerification, requestPasswordReset, resetPassword, changePassword, publicUser, signAccess, signDevice, deviceSecret };

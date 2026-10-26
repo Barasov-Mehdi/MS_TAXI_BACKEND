@@ -28,24 +28,36 @@ function fixTimeOf(driver) {
   return driver.locationFixAt || driver.locationUpdatedAt || null;
 }
 
+/** Ehtiyat (relaxed) axtarışda qəbul olunan koordinat yaşı: ekran sönülü dayanan sürücüdə GPS az-az ölçür. */
+function relaxedFixSeconds(settings) {
+  return settings.driverFixRelaxedSeconds || 300;
+}
+
 /**
  * requireFreshFix: yalnız YENİ sifariş axtarışında true verilir. Heartbeat koordinatı dəyişmədən "canlı" göstərə bilər,
- * ona görə ölçmə yaşı ayrıca yoxlanılır. Təklifi qəbul edərkən (order.service) verilmir: sürücü artıq seçilib.
+ * ona görə ölçmə yaşı ayrıca yoxlanılır.
+ * relaxed: dəqiq/təzə koordinatlı sürücü tapılmayanda ehtiyat axtarış — koordinat 5 dəq-ə qədər köhnə və GPS dəqiqliyi
+ *   zəif ola bilər (ekran sönülü, bina içində dayanan sürücü). Əvvəl belə sürücü ümumiyyətlə seçilmirdi və sifariş
+ *   sürücü hərəkət edib təzə GPS ölçməsi gələnə qədər gözləyirdi (“gec təyin olunur” problemi).
+ * forAccept: təklifi QƏBUL edərkən (order.service): sürücü artıq seçilib, mövqe/dəqiqlik yoxlanılmır
+ *   (əks halda arxa planda GPS zəifləyəndə "Qəbul et" DRIVER_NOT_ELIGIBLE ilə rədd olunurdu).
  */
-function driverCanTakeNewOrder(driver, settings, now = new Date(), { requireFreshFix = false } = {}) {
+function driverCanTakeNewOrder(driver, settings, now = new Date(), { requireFreshFix = false, relaxed = false, forAccept = false } = {}) {
   if (!driver.isOnline || !driver.isActive || !driver.isVerified) return { ok: false, reason: 'NOT_AVAILABLE' };
-  const staleSec = settings.driverLocationStaleSeconds || 45;
-  if (!driver.locationUpdatedAt || (now - new Date(driver.locationUpdatedAt)) / 1000 > staleSec) {
-    return { ok: false, reason: 'STALE_LOCATION' };
-  }
-  if (requireFreshFix) {
-    const fixAt = fixTimeOf(driver);
-    const maxFixSec = settings.driverFixMaxAgeSeconds || 60;
-    if (!fixAt || (now - new Date(fixAt)) / 1000 > maxFixSec) return { ok: false, reason: 'STALE_FIX' };
-  }
-  const acc = driver.locationMeta && driver.locationMeta.accuracy;
-  if (acc != null && acc > (settings.maxLocationAccuracyMeters || 80)) {
-    return { ok: false, reason: 'BAD_ACCURACY' };
+  if (!forAccept) {
+    const staleSec = settings.driverLocationStaleSeconds || 45;
+    if (!driver.locationUpdatedAt || (now - new Date(driver.locationUpdatedAt)) / 1000 > staleSec) {
+      return { ok: false, reason: 'STALE_LOCATION' };
+    }
+    if (requireFreshFix) {
+      const fixAt = fixTimeOf(driver);
+      const maxFixSec = relaxed ? relaxedFixSeconds(settings) : settings.driverFixMaxAgeSeconds || 60;
+      if (!fixAt || (now - new Date(fixAt)) / 1000 > maxFixSec) return { ok: false, reason: 'STALE_FIX' };
+    }
+    const acc = driver.locationMeta && driver.locationMeta.accuracy;
+    if (!relaxed && acc != null && acc > (settings.maxLocationAccuracyMeters || 80)) {
+      return { ok: false, reason: 'BAD_ACCURACY' };
+    }
   }
   if ((driver.walletBalanceMinor || 0) < (settings.minimumDriverBalance || 0) && !settings.negativeBalanceAllowed) {
     return { ok: false, reason: 'LOW_BALANCE' };
@@ -113,11 +125,12 @@ async function logWhyNoCandidates(pickupLng, pickupLat, nearbyCount, skipped, ex
  * excludeIds - artıq təklif olunmuş və ya başqa sifarişdə təklif gözləyən sürücülər.
  * (calculateScore saxlanılıb, lakin dispatch sıralaması üçün istifadə olunmur: sifarişi ən yaxın sürücü almalıdır.)
  */
-async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {}) {
+async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [], relaxed = false } = {}) {
   const settings = await getSettings();
   const maxR = settings.maxDriverRadius || 5000;
   const now = new Date();
-  const fixCutoff = new Date(now.getTime() - (settings.driverFixMaxAgeSeconds || 60) * 1000);
+  const fixSec = relaxed ? relaxedFixSeconds(settings) : settings.driverFixMaxAgeSeconds || 60;
+  const fixCutoff = new Date(now.getTime() - fixSec * 1000);
 
   const nearby = await Driver.find({
     isOnline: true,
@@ -141,7 +154,7 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
   const candidates = [];
   const skipped = [];
   for (const driver of nearby) {
-    const gate = driverCanTakeNewOrder(driver, settings, now, { requireFreshFix: true });
+    const gate = driverCanTakeNewOrder(driver, settings, now, { requireFreshFix: true, relaxed });
     if (!gate.ok) {
       skipped.push({ driverId: String(driver._id), reason: gate.reason });
       continue;
@@ -188,7 +201,8 @@ async function findEligibleDrivers(pickupLng, pickupLat, { excludeIds = [] } = {
     });
   }
 
-  if (!candidates.length) {
+  // Diaqnostika yalnız ehtiyat (relaxed) axtarış da boş qalanda: hər iki mərhələdə log yazılmasın
+  if (!candidates.length && relaxed) {
     await logWhyNoCandidates(pickupLng, pickupLat, nearby.length, skipped, excludeIds);
   }
 

@@ -37,7 +37,13 @@ const globalKey = (req) => {
     try {
       const { sub } = jwt.verify(h.slice(7), config.jwt.accessSecret);
       if (sub) return `u:${sub}`;
-    } catch (_) { /* IP-yə düş */ }
+    } catch (_) {
+      try {
+        // Native cihaz tokeni (ekran kilidli halda mövqe / qəbul)
+        const { sub } = jwt.verify(h.slice(7), `${config.jwt.accessSecret}:device`);
+        if (sub) return `u:${sub}`;
+      } catch (__) { /* IP-yə düş */ }
+    }
   }
   return `ip:${req.ip}`;
 };

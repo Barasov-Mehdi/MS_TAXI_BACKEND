@@ -38,3 +38,28 @@ test('heartbeat özü də kəsilibsə STALE_LOCATION', () => {
 test('dəqiqlik 80 m-dən pisdirsə BAD_ACCURACY (mövcud qayda saxlanılıb)', () => {
   expect(gate(base({ locationMeta: { accuracy: 150 } }), { requireFreshFix: true }).reason).toBe('BAD_ACCURACY');
 });
+
+describe('ehtiyat (relaxed) axtarış və qəbul', () => {
+  test('koordinat 2 dəq köhnə: strict-də yox, relaxed-də uyğundur', () => {
+    const d = base({ locationUpdatedAt: ago(3), locationFixAt: ago(120) });
+    expect(gate(d, { requireFreshFix: true }).ok).toBe(false);
+    expect(gate(d, { requireFreshFix: true, relaxed: true }).ok).toBe(true);
+  });
+
+  test('koordinat 10 dəq köhnə: relaxed-də də uyğun deyil', () => {
+    const d = base({ locationUpdatedAt: ago(3), locationFixAt: ago(600) });
+    expect(gate(d, { requireFreshFix: true, relaxed: true })).toEqual({ ok: false, reason: 'STALE_FIX' });
+  });
+
+  test('GPS dəqiqliyi zəif (150 m): strict BAD_ACCURACY, relaxed uyğun', () => {
+    const d = base({ locationMeta: { accuracy: 150 } });
+    expect(gate(d, { requireFreshFix: true })).toEqual({ ok: false, reason: 'BAD_ACCURACY' });
+    expect(gate(d, { requireFreshFix: true, relaxed: true }).ok).toBe(true);
+  });
+
+  test('qəbul (forAccept): zəif GPS və köhnə heartbeat qəbulu əngəlləmir, offline isə əngəlləyir', () => {
+    const d = base({ locationMeta: { accuracy: 500 }, locationUpdatedAt: ago(120), locationFixAt: ago(900) });
+    expect(gate(d, { forAccept: true }).ok).toBe(true);
+    expect(gate({ ...d, isOnline: false }, { forAccept: true }).ok).toBe(false);
+  });
+});

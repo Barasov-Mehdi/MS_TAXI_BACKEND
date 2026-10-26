@@ -284,7 +284,8 @@ async function acceptOrder({ orderId, driver, user }) {
 
       const freshDriver = await Driver.findById(driver._id).session(session);
       if (!freshDriver) throw new AppError('DRIVER_NOT_ELIGIBLE', 'NOT_AVAILABLE', 409);
-      const gate = matchingService.driverCanTakeNewOrder(freshDriver, settings);
+      // Sürücü artıq seçilib: mövqe yaşı / GPS dəqiqliyi burada yoxlanılmır (ekran kilidli qəbul rədd edilməsin)
+      const gate = matchingService.driverCanTakeNewOrder(freshDriver, settings, now, { forAccept: true });
       if (!gate.ok) throw new AppError('DRIVER_NOT_ELIGIBLE', gate.reason, 409);
 
       let queued = false;
