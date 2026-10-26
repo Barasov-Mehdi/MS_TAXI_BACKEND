@@ -87,6 +87,8 @@ const orderSchema = new mongoose.Schema(
     // Dayandırılan səfərin davamı üçün avtomatik yaradılan yeni sifariş (və əksinə)
     continuedToOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
     continuedFromOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+    // Planlı (avtomatik) sifarişdən yaradılıbsa
+    scheduledRideId: { type: mongoose.Schema.Types.ObjectId, ref: 'ScheduledRide', default: null },
     // Sürücü qəbul edib sonra ləğv edəndə sifariş növbəti sürücüyə ötürülür: neçə dəfə ötürüldüyü
     redispatchCount: { type: Number, default: 0 },
     // Yumşaq silmə: admin "sil" edəndə sənəd bazada qalır (sürücü statistikası/hesabatlar pozulmur)

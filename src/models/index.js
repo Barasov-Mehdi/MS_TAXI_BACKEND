@@ -27,4 +27,6 @@ module.exports = {
   News: require('./News'),
   CustomerSupportThread: require('./CustomerSupportThread'),
   CustomerSupportMessage: require('./CustomerSupportMessage'),
+  SavedPlace: require('./SavedPlace'),
+  ScheduledRide: require('./ScheduledRide'),
 };

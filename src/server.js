@@ -66,6 +66,10 @@ app.get('/', (req, res) => {
 });
 app.use('/app', require('./routes/app.routes'));
 app.use('/auth', require('./routes/auth.routes'));
+// Ünvanlar və planlı sifarişlər (ümumi /customers router-indən əvvəl: öz :id yoxlaması var)
+const { placesRouter, scheduledRouter } = require('./routes/customerPlaces.routes');
+app.use('/customers/places', placesRouter);
+app.use('/customers/scheduled-rides', scheduledRouter);
 app.use('/customers', require('./routes/customer.routes'));
 app.use('/drivers', require('./routes/driver.routes'));
 app.use('/admin', require('./routes/admin.routes'));
@@ -90,6 +94,8 @@ async function start() {
   startDispatchLoop();
   // Planlaşdırılmış "Yeniliklər" vaxtı çatanda sürücülərə göndərilir
   require('./services/news.service').startScheduler();
+  // Planlı (avtomatik) sifarişlər: vaxtı çatanda sifariş yaradılır, 15 dəq əvvəl xatırlatma
+  require('./services/scheduledRide.service').startScheduler();
 }
 
 let shuttingDown = false;

@@ -299,6 +299,10 @@ const CUSTOMER_STYLE = {
   chat_message: { channelId: 'c_chat', sound: 'snd_message_in', icon: 'ic_notif_chat', color: '#00B14F' },
   support_message: { channelId: 'c_support', sound: 'snd_support', icon: 'ic_notif_support', color: '#6D3FD6' },
   test: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_stat_notify', color: '#00B14F' },
+  // Planlı (avtomatik) sifariş
+  scheduled_reminder: { channelId: 'c_schedule', sound: 'snd_trip', icon: 'ic_notif_route', color: '#1D5FD1' },
+  scheduled_order: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_notif_search', color: '#00B14F' },
+  scheduled_failed: { channelId: 'c_trip_cancelled', sound: 'snd_cancelled', icon: 'ic_notif_cancel', color: '#D93025' },
 };
 const CUSTOMER_DEFAULT_STYLE = { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_stat_notify', color: '#00B14F' };
 

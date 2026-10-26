@@ -126,6 +126,7 @@ async function createOrder({
   // Daxili istifadə: bu sürücülərə təklif getməsin (məs. səfəri dayandıran sürücü)
   excludeDriverIds = [],
   continuedFromOrderId = null,
+  scheduledRideId = null,
 }) {
   if (idempotencyKey) {
     const existing = await Order.findOne({ customerId: customer._id, idempotencyKey });
@@ -211,6 +212,7 @@ async function createOrder({
         idempotencyKey: idempotencyKey || null,
         rejectedDriverIds: excludeDriverIds,
         continuedFromOrderId,
+        scheduledRideId,
       }],
       { session }
     );
