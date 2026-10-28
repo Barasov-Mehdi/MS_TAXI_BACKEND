@@ -269,6 +269,11 @@ router.get('/customers/:id', async (req, res, next) => {
         phone: u.phone || '',
         isActive: u.isActive !== false,
         createdAt: c.createdAt,
+        // Tətbiq versiyası / platforma / dil (yeniləmə bildirişləri və dəstək üçün)
+        appVersionCode: c.appVersionCode || null,
+        appVersionName: c.appVersionName || null,
+        appPlatform: c.appPlatform || null,
+        language: c.language || 'az',
       },
       stats: totals[0] || { total: 0, completed: 0, cancelled: 0, spent: 0 },
       orders: await views.enrichOrders(orders),
