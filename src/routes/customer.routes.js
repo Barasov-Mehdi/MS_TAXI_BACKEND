@@ -202,10 +202,12 @@ router.post('/orders/quote', async (req, res, next) => {
       for (const t of Object.keys(quotes)) {
         try {
           const r = await promoService.validateAndQuote(code, req.customer._id, quotes[t].priceMinor, req.user._id);
-          const discount = Math.min(r.discountMinor || 0, quotes[t].priceMinor);
-          quotes[t].originalPriceMinor = quotes[t].priceMinor;
-          quotes[t].discountMinor = discount;
-          quotes[t].priceMinor -= discount;
+          const original = quotes[t].priceMinor;
+          // Sifariş yaradılanda olduğu kimi: endirimdən sonra 10 qəpiyə yuvarlanır (qiymətlər üst-üstə düşsün)
+          const finalMinor = pricingService.roundPrice(original - Math.min(r.discountMinor || 0, original));
+          quotes[t].originalPriceMinor = original;
+          quotes[t].discountMinor = Math.max(0, original - finalMinor);
+          quotes[t].priceMinor = finalMinor;
           quotes[t].price = quotes[t].priceMinor / 100;
           promo.valid = true;
         } catch (e) {

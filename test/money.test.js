@@ -25,3 +25,16 @@ test('band pricing 3.4km -> 240', () => {
   };
   expect(priceFromBands(3.4, rule)).toBe(240);
 });
+
+describe('qiymət 10 qəpiyə yuvarlanır', () => {
+  const { roundPrice } = require('../src/services/pricing.service');
+  test.each([
+    [188, 190],
+    [184, 180],
+    [185, 190],
+    [288, 290],
+    [200, 200],
+    [4, 10],
+    [0, 0],
+  ])('%i → %i', (a, b) => expect(roundPrice(a)).toBe(b));
+});

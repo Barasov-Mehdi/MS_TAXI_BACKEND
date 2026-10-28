@@ -108,6 +108,24 @@ function applyBounds(amount, rule) {
   return Math.round(v * surge);
 }
 
+/**
+ * Yekun qiymət 10 qəpiyə yuvarlanır (ən yaxın): 1.88 → 1.90, 1.84 → 1.80, 1.85 → 1.90.
+ * Bütün ekranlarda (müştəri, sürücü, admin) qiymət 0 ilə bitir; müştərinin ödədiyi = sürücünün gördüyü.
+ * Addımı dəyişmək: PRICE_ROUND_MINOR (məs. 50 → 0.50 AZN, 1 → yuvarlama yoxdur).
+ */
+function roundStep() {
+  const n = Number.parseInt(process.env.PRICE_ROUND_MINOR || '10', 10);
+  return Number.isFinite(n) && n >= 1 ? n : 10;
+}
+
+function roundPrice(minor) {
+  const v = Math.max(0, Math.round(Number(minor) || 0));
+  const step = roundStep();
+  if (step <= 1 || v === 0) return v;
+  // Pulsuz olmayan gediş 0-a yuvarlanmasın
+  return Math.max(step, Math.round(v / step) * step);
+}
+
 async function calculateTripPrice({
   distanceMeters,
   durationMin = 0,
@@ -129,7 +147,7 @@ async function calculateTripPrice({
   const raw = priceFromBands(distanceKm, rule) + timeFareMinor + stopFareMinor;
   const surged = applyBounds(raw, rule);
   const discount = Math.min(promoDiscountMinor || 0, surged);
-  const finalPriceMinor = Math.max(0, surged - discount);
+  const finalPriceMinor = roundPrice(Math.max(0, surged - discount));
   return {
     pricingRuleId: rule._id,
     pricingRuleVersion: rule.version,
@@ -148,6 +166,7 @@ async function calculateTripPrice({
 
 module.exports = {
   calculateTripPrice,
+  roundPrice,
   getActiveRule,
   priceFromBands,
   resolveTripMetrics,
