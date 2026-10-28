@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const config = require('../config');
 const { User, Customer, Driver } = require('../models');
 const { AppError } = require('../utils/errors');
+const { sessionMismatch, sessionMismatchError } = require('../utils/session');
 
 /**
  * Native cihaz tokeni (scope=device) yalnız bu endpoint-lərdə qəbul olunur.
@@ -50,6 +51,8 @@ async function authenticate(req, res, next) {
       if (user.role === 'CUSTOMER') throw new AppError('USER_DISABLED', 'Hesab deaktiv edilib', 403);
       throw new AppError('UNAUTHORIZED', 'Invalid token', 401);
     }
+    // Bir hesab = bir cihaz: başqa cihazdan daxil olunubsa bu cihazın tokeni keçmir
+    if (scope === 'access' && sessionMismatch(user, payload.sid)) throw sessionMismatchError(user);
     req.user = user;
     req.authScope = scope;
     if (user.role === 'CUSTOMER') {

@@ -23,6 +23,9 @@ const userSchema = new mongoose.Schema(
     deletedPhone: { type: String, default: null },
     adminCityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null },
     passwordResetCode: { type: String, default: null },
+    // Bir hesab = bir cihaz (yalnız sürücü): aktiv sessiyanın id-si. Hər girişdə yenilənir;
+    // access token / refresh token / soket bu id ilə yoxlanılır, köhnə cihaz avtomatik çıxış edir.
+    activeSessionId: { type: String, default: null },
     passwordResetExpiresAt: { type: Date, default: null },
   },
   { timestamps: true }

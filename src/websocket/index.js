@@ -6,6 +6,7 @@ const { setIo } = require('./emitter');
 const locationService = require('../services/location.service');
 const chatService = require('../services/chat.service');
 const dispatchService = require('../services/dispatch.service');
+const { sessionMismatch, sessionMismatchError } = require('../utils/session');
 
 const LOCATION_MIN_INTERVAL_MS = 400; // eyni soketdən çox sıx konum yeniləməsi atılır
 
@@ -26,6 +27,9 @@ function attachWebsocket(httpServer) {
       const payload = jwt.verify(token, config.jwt.accessSecret);
       const user = await User.findById(payload.sub);
       if (!user || !user.isActive) return next(new Error('UNAUTHORIZED'));
+      // Bir hesab = bir cihaz: köhnə cihazın soketi qəbul edilmir (tətbiq SESSION_REPLACED görüb çıxış edir)
+      if (sessionMismatch(user, payload.sid)) return next(new Error(sessionMismatchError(user).code));
+      socket.data.sid = payload.sid || null;
       socket.user = user;
       next();
     } catch (e) {

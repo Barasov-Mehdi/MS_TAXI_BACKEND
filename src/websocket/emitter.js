@@ -58,6 +58,24 @@ module.exports = {
     if (!cityId) ioRef.to('admin:all').emit(event, payload);
     else ioRef.to('admin:operations').to(`admin:city:${cityId}`).emit(event, payload);
   },
+  /**
+   * Bir hesab = bir cihaz: istifadəçinin `keepSid`-dən fərqli sessiyalı bütün soketlərinə `session_replaced`
+   * göndərilir və bağlantı qırılır (köhnə telefon dərhal çıxış edir).
+   */
+  kickUserSessions: async (role, userId, keepSid, payload = {}) => {
+    if (!ioRef) return;
+    try {
+      const sockets = await ioRef.in(`${String(role).toLowerCase()}:${userId}`).fetchSockets();
+      for (const s of sockets) {
+        if (keepSid && s.data && s.data.sid === keepSid) continue;
+        s.emit('session_replaced', payload);
+        // Hadisə çatsın deyə bağlantı bir az sonra qırılır
+        setTimeout(() => { try { s.disconnect(true); } catch (_) {} }, 400);
+      }
+    } catch (e) {
+      console.error('[ws] kickUserSessions failed', e && e.message ? e.message : e);
+    }
+  },
   // Otaqdakı bütün bağlantıları qırır (məs. bloklanmış istifadəçi)
   disconnectRoom: (room) => {
     if (ioRef) ioRef.in(room).disconnectSockets(true);

@@ -7,5 +7,7 @@ module.exports = mongoose.model(
     tokenHash: { type: String, required: true, unique: true },
     expiresAt: { type: Date, required: true, index: true },
     revoked: { type: Boolean, default: false },
+    // Sürücü sessiyasının id-si (User.activeSessionId). Başqa cihazdan giriş olunanda köhnə sessiya tanınır.
+    sessionId: { type: String, default: null },
   }, { timestamps: true })
 );

@@ -7,9 +7,13 @@ const { AppError } = require('../utils/errors');
 const { AuditLog } = require('../models');
 const otpService = require('./otp.service');
 const { normalizePhone } = require('../utils/validators');
+const { singleSessionFor, newSessionId, endedSessionId, isEndedSession } = require('../utils/session');
 
 function signAccess(user) {
-  return jwt.sign({ sub: String(user._id), role: user.role }, config.jwt.accessSecret, {
+  const payload = { sub: String(user._id), role: user.role };
+  // Sürücü: token aktiv sessiyaya bağlanır (bir hesab = bir cihaz)
+  if (singleSessionFor(user) && user.activeSessionId) payload.sid = user.activeSessionId;
+  return jwt.sign(payload, config.jwt.accessSecret, {
     expiresIn: config.jwt.accessTtl,
   });
 }
@@ -40,8 +44,33 @@ async function issueRefresh(user) {
     userId: user._id,
     tokenHash: hashToken(raw),
     expiresAt: new Date(Date.now() + ttlMs),
+    sessionId: singleSessionFor(user) ? user.activeSessionId || null : null,
   });
   return raw;
+}
+
+/**
+ * Bir hesab = bir cihaz (sürücü): yeni sessiya açılır, əvvəlki cihaz dərhal çıxış edir.
+ *  - köhnə refresh tokenlər ləğv olunur,
+ *  - native cihaz tokeni və FCM tokeni silinir (köhnə telefona sifariş təklifi getməsin; yeni cihaz öz tokenini yazır),
+ *  - köhnə cihazın soketinə `session_replaced` göndərilib bağlantı qırılır.
+ */
+async function startSingleSession(user, ip) {
+  const prev = user.activeSessionId || null;
+  const sid = newSessionId();
+  await User.updateOne({ _id: user._id }, { $set: { activeSessionId: sid } });
+  user.activeSessionId = sid;
+  await RefreshToken.updateMany({ userId: user._id, revoked: false }, { revoked: true });
+  await Driver.updateOne({ userId: user._id }, { $set: { deviceSessionId: null, fcmToken: null } });
+  try {
+    require('../websocket/emitter')
+      .kickUserSessions(user.role, user._id, sid, { reason: 'NEW_LOGIN', at: new Date().toISOString() })
+      .catch(() => {});
+  } catch (_) { /* soket olmasa da giriş alınsın */ }
+  if (prev && !isEndedSession(prev)) {
+    await AuditLog.create({ actorId: user._id, actorRole: user.role, action: 'SESSION_REPLACED', ip }).catch(() => {});
+  }
+  return sid;
 }
 
 async function register({ role, phone, password, firstName, lastName, email, code, cityId }) {
@@ -111,6 +140,7 @@ async function login({ phone, password, ip }) {
   }
   if (!user.isActive) throw new AppError('USER_DISABLED', 'Account disabled', 403);
   await AuditLog.create({ actorId: user._id, actorRole: user.role, action: 'LOGIN', ip });
+  if (singleSessionFor(user)) await startSingleSession(user, ip);
   return {
     accessToken: signAccess(user),
     refreshToken: await issueRefresh(user),
@@ -168,10 +198,20 @@ async function loginWithOtp({ phone, code, ip }) {
 async function refresh(refreshToken) {
   if (!refreshToken) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
   const tokenHash = hashToken(refreshToken);
-  const row = await RefreshToken.findOne({ tokenHash, revoked: false });
-  if (!row || row.expiresAt < new Date()) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
+  const row = await RefreshToken.findOne({ tokenHash });
+  if (!row) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
   const user = await User.findById(row.userId);
   if (!user || !user.isActive) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
+  // Hesaba başqa cihazdan daxil olunub: köhnə cihaz səbəbi bilsin deyə ayrıca kod
+  if (
+    singleSessionFor(user) &&
+    user.activeSessionId &&
+    !isEndedSession(user.activeSessionId) &&
+    (row.sessionId || null) !== user.activeSessionId
+  ) {
+    throw new AppError('SESSION_REPLACED', 'Hesabınıza başqa cihazdan daxil olunub', 401);
+  }
+  if (row.revoked || row.expiresAt < new Date()) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
   row.revoked = true;
   await row.save();
   return {
@@ -186,6 +226,13 @@ async function logout(refreshToken) {
   // Çıxış: native cihaz tokeni də etibarsız olsun
   if (row && row.userId) {
     await Driver.updateOne({ userId: row.userId }, { $set: { deviceSessionId: null } }).catch(() => {});
+    // Aktiv sessiyadan çıxılıb: onun access tokenləri də dərhal keçməsin
+    if (row.sessionId) {
+      await User.updateOne(
+        { _id: row.userId, activeSessionId: row.sessionId },
+        { $set: { activeSessionId: endedSessionId() } }
+      ).catch(() => {});
+    }
   }
 }
 
@@ -238,9 +285,14 @@ async function resetPassword({ phone: phoneInput, code, password, ip }) {
   user.passwordHash = await User.hashPassword(password);
   user.passwordResetCode = null;
   user.passwordResetExpiresAt = null;
+  // Sürücü: açıq sessiyanın access tokenləri də dərhal etibarsız olsun
+  if (singleSessionFor(user)) user.activeSessionId = endedSessionId();
   await user.save();
   // Bütün köhnə sessiyalar bağlanır (parol oğurlanmış ola bilər).
   await RefreshToken.updateMany({ userId: user._id, revoked: false }, { revoked: true });
+  if (singleSessionFor(user)) {
+    try { require('../websocket/emitter').disconnectRoom(`driver:${user._id}`); } catch (_) {}
+  }
   await AuditLog.create({ actorId: user._id, actorRole: user.role, action: 'PASSWORD_RESET', ip });
   return { reset: true };
 }
