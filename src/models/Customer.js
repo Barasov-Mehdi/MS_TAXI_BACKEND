@@ -17,6 +17,8 @@ const customerSchema = new mongoose.Schema(
     // Cihazdakı tətbiq versiyası: köhnə versiyalı müştərilərə "Yeni versiya" bildirişi üçün
     appVersionCode: { type: Number, default: null, index: true },
     appVersionName: { type: String, default: null },
+    // Cihazın platforması (android / ios): yeniləmə bildirişi yalnız həmin platformanın versiyasına görə göndərilir
+    appPlatform: { type: String, enum: ['android', 'ios', null], default: null },
   },
   { timestamps: true }
 );

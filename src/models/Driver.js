@@ -44,6 +44,8 @@ const driverSchema = new mongoose.Schema(
     // Cihazdakı tətbiq versiyası (device-token ilə gəlir): köhnə versiyalı sürücülərə yeniləmə bildirişi üçün
     appVersionCode: { type: Number, default: null },
     appVersionName: { type: String, default: null },
+    // Cihazın platforması (android / ios): yeniləmə bildirişi yalnız həmin platformanın versiyasına görə göndərilir
+    appPlatform: { type: String, enum: ['android', 'ios', null], default: null },
     // "Yeniliklər" bölməsinə son baxış vaxtı (oxunmamış sayı bundan sonrakı xəbərlərdir)
     newsSeenAt: { type: Date, default: null },
     // Silinmiş sürücü (yumşaq silmə): siyahılarda görünmür, sifariş/qazanc tarixçəsi qalır

@@ -1208,17 +1208,28 @@ router.post(
 // Play-ə yeni AAB yüklədikdən və yayımlandıqdan SONRA çağırın:
 //   PUT /admin/app-version { app: "driver",   latestVersionCode: 4,  latestVersionName: "3.1.0", minVersionCode: 3, notes: ["..."], notify: true }
 //   PUT /admin/app-version { app: "customer", latestVersionCode: 12, latestVersionName: "1.4.0", notes: ["..."], notify: true }
+//   PUT /admin/app-version { app: "driver", platform: "ios", latestVersionCode: 5, latestVersionName: "3.1.4",
+//                            storeUrl: "https://apps.apple.com/az/app/id...", notify: true }
 // Versiyanı dəyişmədən köhnə versiyalılara bildirişi təkrar göndərmək:
-//   POST /admin/app-version/notify { app: "customer" }
-// app verilməsə "driver" sayılır (köhnə admin paneli ilə uyğunluq).
+//   POST /admin/app-version/notify { app: "customer", platform: "ios" }
+// GET /admin/app-version?app=driver&platform=ios       — bir platforma
+// GET /admin/app-version?app=driver&platform=all       — hər iki platforma: { android: {...}, ios: {...} }
+// app verilməsə "driver", platform verilməsə "android" sayılır (köhnə admin paneli ilə uyğunluq).
 
 const appParam = Joi.string().valid(...appVersion.APP_NAMES).default('driver');
+const platformParam = Joi.string().valid(...appVersion.PLATFORMS).default('android');
 
 router.get('/app-version', requireSuperAdmin, async (req, res, next) => {
   try {
     const app = String(req.query.app || 'driver');
+    const platform = String(req.query.platform || 'android');
     if (!appVersion.isApp(app)) throw new AppError('VALIDATION_ERROR', 'app: driver və ya customer', 400);
-    const st = await appVersion.stats(app);
+    if (platform === 'all') {
+      const [android, ios] = await Promise.all([appVersion.stats(app, 'android'), appVersion.stats(app, 'ios')]);
+      return ok(res, { app, android, ios });
+    }
+    if (!appVersion.isPlatform(platform)) throw new AppError('VALIDATION_ERROR', 'platform: android, ios və ya all', 400);
+    const st = await appVersion.stats(app, platform);
     // Köhnə admin paneli `drivers` sahəsini oxuyur
     ok(res, app === 'driver' ? { ...st, drivers: { reported: st.users.reported, outdated: st.users.outdated } } : st);
   } catch (e) { next(e); }
@@ -1227,11 +1238,11 @@ router.get('/app-version', requireSuperAdmin, async (req, res, next) => {
 router.post(
   '/app-version/notify',
   requireSuperAdmin,
-  validated(Joi.object({ app: appParam })),
+  validated(Joi.object({ app: appParam, platform: platformParam })),
   async (req, res, next) => {
     try {
-      const r = await appVersion.notifyOutdated(req.body.app);
-      await audit(req, 'APP_VERSION_NOTIFY', 'SystemSetting', null, null, { app: req.body.app, ...r });
+      const r = await appVersion.notifyOutdated(req.body.app, req.body.platform);
+      await audit(req, 'APP_VERSION_NOTIFY', 'SystemSetting', null, null, { app: req.body.app, platform: req.body.platform, ...r });
       ok(res, r);
     } catch (e) { next(e); }
   }
@@ -1242,6 +1253,7 @@ router.put(
   requireSuperAdmin,
   validated(Joi.object({
     app: appParam,
+    platform: platformParam,
     latestVersionCode: Joi.number().integer().min(1).required(),
     latestVersionName: Joi.string().trim().max(30).required(),
     minVersionCode: Joi.number().integer().min(1),
@@ -1255,7 +1267,7 @@ router.put(
       if (data.minVersionCode && data.minVersionCode > data.latestVersionCode) {
         throw new AppError('VALIDATION_ERROR', 'minVersionCode latestVersionCode-dan böyük ola bilməz', 400);
       }
-      const r = await appVersion.setInfo(app, data, { notify });
+      const r = await appVersion.setInfo(app, data, { notify }); // data.platform: android | ios
       await audit(req, 'APP_VERSION_UPDATE', 'SystemSetting', null, null, { app, ...data, notify, notified: r.notified, targets: r.targets });
       ok(res, r);
     } catch (e) { next(e); }

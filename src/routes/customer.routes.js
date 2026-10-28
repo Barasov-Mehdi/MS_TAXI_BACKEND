@@ -430,6 +430,7 @@ router.post(
     // İstəyə bağlı: cihazdakı tətbiq versiyası (yeniləmə bildirişləri üçün)
     appVersionCode: Joi.number().integer().min(1),
     appVersionName: Joi.string().trim().max(30).allow(''),
+    appPlatform: Joi.string().valid('android', 'ios'),
   })),
   async (req, res, next) => {
     try {
@@ -441,6 +442,7 @@ router.post(
         await require('../services/appVersion.service').rememberCustomerVersion(req.customer._id, {
           versionCode: req.body.appVersionCode,
           versionName: req.body.appVersionName,
+          platform: req.body.appPlatform,
         });
       }
       ok(res, { saved: true });

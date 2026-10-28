@@ -54,6 +54,20 @@ const DEFAULTS = {
   customerAndroidMinCode: 1,
   customerAndroidNotes: [],
   customerAndroidStoreUrl: 'https://play.google.com/store/apps/details?id=com.barastaxi',
+
+  // ---- iOS versiyaları: GET /app/version?app=driver|customer&platform=ios ----
+  // versionCode = Info.plist → CFBundleVersion (build nömrəsi). App Store linkini admin paneldən yazın
+  // (məs. https://apps.apple.com/az/app/id1234567890). PUT /admin/app-version { app, platform: 'ios', ... }
+  driverIosLatestCode: 1,
+  driverIosLatestName: '',
+  driverIosMinCode: 1,
+  driverIosNotes: [],
+  driverIosStoreUrl: '',
+  customerIosLatestCode: 1,
+  customerIosLatestName: '',
+  customerIosMinCode: 1,
+  customerIosNotes: [],
+  customerIosStoreUrl: '',
 };
 
 let cache = null;

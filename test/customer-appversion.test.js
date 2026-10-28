@@ -10,6 +10,12 @@ jest.mock('../src/services/settings.service', () => ({
     customerAndroidMinCode: 10,
     customerAndroidNotes: ['Yeni xəritə'],
     customerAndroidStoreUrl: 'https://play.google.com/store/apps/details?id=com.barastaxi',
+    driverIosLatestCode: 9,
+    driverIosLatestName: '3.1.4',
+    driverIosMinCode: 8,
+    customerIosLatestCode: 4,
+    customerIosLatestName: '1.4.0',
+    customerIosStoreUrl: 'https://apps.apple.com/az/app/id123',
     ...settings,
   })),
   setSetting: jest.fn(async (k, v) => { settings[k] = v; }),
@@ -61,12 +67,15 @@ test('yeni müştəri versiyası: açıq tətbiqlərə socket + köhnələrə ö
   // yalnız köhnə / versiyası bilinməyən və push tokeni olanlar
   const q = models.Customer.find.mock.calls[0][0];
   expect(q.fcmToken).toEqual({ $ne: null });
-  expect(q.$or).toEqual([{ appVersionCode: { $lt: 13 } }, { appVersionCode: null }]);
+  expect(q.$and).toEqual([
+    { appPlatform: { $in: ['android', null] } },
+    { $or: [{ appVersionCode: { $lt: 13 } }, { appVersionCode: null }] },
+  ]);
 });
 
 test('versiyanı dəyişmədən bildirişi təkrar göndərmək', async () => {
   models.Customer.find.mockReturnValue({ select: () => ({ lean: async () => [{ _id: 'c1', language: 'en' }] }) });
-  const r = await appVersion.notifyOutdated('customer', { wait: true });
+  const r = await appVersion.notifyOutdated('customer', 'android', { wait: true });
   expect(r).toEqual({ targets: 1, notified: 1 });
   expect(push.sendToCustomer.mock.calls[0][1].title).toBe('New version 1.4.0 available');
   expect(push.sendToCustomer.mock.calls[0][1].body).toBe('Yeni xəritə');
@@ -75,4 +84,40 @@ test('versiyanı dəyişmədən bildirişi təkrar göndərmək', async () => {
 test('müştəri versiyası yadda saxlanılır', async () => {
   await appVersion.rememberCustomerVersion('c1', { versionCode: '12', versionName: '1.4.0' });
   expect(models.Customer.updateOne).toHaveBeenCalledWith({ _id: 'c1' }, { $set: { appVersionCode: 12, appVersionName: '1.4.0' } });
+});
+
+describe('iOS', () => {
+  test('iOS versiyası Android-dən ayrıdır', async () => {
+    const r = await appVersion.check({ app: 'driver', platform: 'ios', versionCode: 8 });
+    expect(r.platform).toBe('ios');
+    expect(r.updateAvailable).toBe(true);
+    expect(r.forceUpdate).toBe(false);
+    expect((await appVersion.check({ app: 'driver', platform: 'ios', versionCode: 7 })).forceUpdate).toBe(true);
+    // eyni nömrə Android-də ən son versiyadan böyükdür
+    expect((await appVersion.check({ app: 'driver', platform: 'android', versionCode: 8 })).updateAvailable).toBe(false);
+    const c = await appVersion.check({ app: 'customer', platform: 'ios', versionCode: 3 });
+    expect(c.updateAvailable).toBe(true);
+    expect(c.storeUrl).toBe('https://apps.apple.com/az/app/id123');
+  });
+
+  test('iOS yeniləməsi yalnız iOS istifadəçilərinə gedir və iOS açarlarına yazılır', async () => {
+    const settingsSvc = require('../src/services/settings.service');
+    models.Customer.find.mockReturnValue({ select: () => ({ lean: async () => [{ _id: 'c9', language: 'tr' }] }) });
+    const r = await appVersion.setInfo('customer', { platform: 'ios', latestVersionCode: 5, latestVersionName: '1.5.0' }, { notify: true, wait: true });
+    expect(r.platform).toBe('ios');
+    expect(settingsSvc.setSetting).toHaveBeenCalledWith('customerIosLatestCode', 5);
+    expect(settingsSvc.setSetting).not.toHaveBeenCalledWith('customerAndroidLatestCode', expect.anything());
+    const q = models.Customer.find.mock.calls[0][0];
+    expect(q.$and[0]).toEqual({ appPlatform: 'ios' });
+    expect(push.sendToCustomer.mock.calls[0][1].title).toBe('Yeni sürüm 1.5.0 mevcut');
+    expect(realtime.toCustomers).toHaveBeenCalledWith('app_version_changed', expect.objectContaining({ platform: 'ios' }));
+  });
+
+  test('platforma ilə versiya yadda saxlanılır', async () => {
+    await appVersion.rememberDriverVersion('d1', { versionCode: 9, versionName: '3.1.4', platform: 'ios' });
+    expect(models.Driver.updateOne).toHaveBeenCalledWith(
+      { _id: 'd1' },
+      { $set: { appVersionCode: 9, appVersionName: '3.1.4', appPlatform: 'ios' } }
+    );
+  });
 });

@@ -310,6 +310,7 @@ router.post('/device-token', async (req, res, next) => {
     await appVersion.rememberDriverVersion(req.driver._id, {
       versionCode: req.body?.appVersionCode,
       versionName: req.body?.appVersionName,
+      platform: req.body?.appPlatform, // 'android' | 'ios' (köhnə tətbiq göndərmir → dəyişmir)
     });
     ok(res, { saved: true });
   } catch (e) { next(e); }

@@ -9,13 +9,13 @@ const config = require('../config');
  * İstəyə bağlı giriş: Authorization başlığı varsa və müştəri tokenidirsə, cihazın versiyası yadda saxlanılır
  * (köhnə versiyalı müştərilərə "Yeni versiya" bildirişi üçün). Token yoxdur / etibarsızdır → səssiz keçilir.
  */
-async function rememberCaller(req, app) {
+async function rememberCaller(req, app, platform) {
   try {
     const h = req.headers.authorization || '';
     if (!h.startsWith('Bearer ')) return;
     const p = jwt.verify(h.slice(7), config.jwt.accessSecret);
     const { Customer, Driver } = require('../models');
-    const v = { versionCode: req.query.versionCode, versionName: req.query.versionName };
+    const v = { versionCode: req.query.versionCode, versionName: req.query.versionName, platform };
     if (app === 'customer' && p.role === 'CUSTOMER') {
       const c = await Customer.findOne({ userId: p.sub }).select('_id').lean();
       if (c) await appVersion.rememberCustomerVersion(c._id, v);
@@ -30,17 +30,18 @@ async function rememberCaller(req, app) {
  * Tətbiq versiyası (giriş tələb etmir: məcburi yeniləmə login ekranında da işləməlidir).
  *   GET /app/version?app=driver&platform=android&versionCode=4
  *   GET /app/version?app=customer&platform=android&versionCode=12&versionName=1.4.0
+ *   GET /app/version?app=customer&platform=ios&versionCode=7      (iOS: CFBundleVersion)
  */
 router.get('/version', async (req, res, next) => {
   try {
     const app = String(req.query.app || 'driver');
     const platform = String(req.query.platform || 'android');
-    if (!appVersion.isApp(app) || platform !== 'android') {
+    if (!appVersion.isApp(app) || !appVersion.isPlatform(platform)) {
       throw new AppError('NOT_SUPPORTED', 'Bu tətbiq/platforma üçün versiya məlumatı yoxdur', 404);
     }
     res.set('Cache-Control', 'no-store');
-    rememberCaller(req, app); // gözlənilmir
-    ok(res, await appVersion.check({ app, versionCode: req.query.versionCode }));
+    rememberCaller(req, app, platform); // gözlənilmir
+    ok(res, await appVersion.check({ app, platform, versionCode: req.query.versionCode }));
   } catch (e) { next(e); }
 });
 
