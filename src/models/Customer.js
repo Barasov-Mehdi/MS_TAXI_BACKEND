@@ -19,6 +19,8 @@ const customerSchema = new mongoose.Schema(
     appVersionName: { type: String, default: null },
     // Cihazın platforması (android / ios): yeniləmə bildirişi yalnız həmin platformanın versiyasına görə göndərilir
     appPlatform: { type: String, enum: ['android', 'ios', null], default: null },
+    // "Yeniliklər" bölməsinə son baxış vaxtı (oxunmamış sayı bundan sonrakı elanlardır)
+    newsSeenAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

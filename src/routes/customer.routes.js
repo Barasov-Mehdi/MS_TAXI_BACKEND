@@ -15,6 +15,7 @@ const Joi = require('joi');
 const promoService = require('../services/promo.service');
 const cityService = require('../services/city.service');
 const customerSupport = require('../services/customerSupport.service');
+const newsService = require('../services/news.service');
 
 function validated(schema) {
   return (req, res, next) => {
@@ -44,7 +45,28 @@ router.get('/me', async (req, res, next) => {
       customer: req.customer,
       // Ofisdən oxunmamış mesaj sayı ("Dəstək" bölməsindəki nişan)
       supportUnread: await customerSupport.unreadForCustomer(req.customer._id),
+      // "Yeniliklər" bölməsində oxunmamış elan sayı
+      newsUnread: await newsService.unreadForCustomer(req.customer).catch(() => 0),
     });
+  } catch (e) { next(e); }
+});
+
+// ---------------------------------------------------------------- Yeniliklər (admin elanları)
+// GET  /customers/news?before=<ISO>&limit=30 → { news: [...], hasMore, unread }
+// POST /customers/news/read                  → hamısı oxundu (nişan sıfırlanır)
+// Socket (customers otağı): news_published / news_updated / news_deleted
+
+router.get('/news', async (req, res, next) => {
+  try {
+    const page = await newsService.listForCustomer(req.customer, { before: req.query.before, limit: req.query.limit });
+    ok(res, { ...page, unread: await newsService.unreadForCustomer(req.customer) });
+  } catch (e) { next(e); }
+});
+
+router.post('/news/read', async (req, res, next) => {
+  try {
+    await newsService.markReadByCustomer(req.customer._id);
+    ok(res, { unread: 0 });
   } catch (e) { next(e); }
 });
 

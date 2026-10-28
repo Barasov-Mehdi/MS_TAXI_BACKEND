@@ -1,10 +1,14 @@
 const mongoose = require('mongoose');
 
 /**
- * Sürücülər üçün "Yeniliklər" (elanlar, qayda dəyişikliyi, kampaniya, tətbiq yeniliyi).
+ * "Yeniliklər" (elanlar, qayda dəyişikliyi, kampaniya, tətbiq yeniliyi).
+ *  audience = drivers   → yalnız sürücü tətbiqi (köhnə qeydlərdə sahə yoxdur → sürücü sayılır)
+ *  audience = customers → yalnız müştəri tətbiqi
+ *  audience = all       → hər iki tətbiq
  *  cityId = null  → bütün şəhərlərin sürücüləri görür (yalnız baş admin yarada bilər)
- *  cityId dolu    → yalnız həmin şəhərin sürücüləri (regional admin yalnız öz şəhərinə yazır)
- * Oxunmamış sayı: Driver.newsSeenAt-dən sonra dərc olunan xəbərlər.
+ *  cityId dolu    → yalnız həmin şəhərin sürücüləri (regional admin yalnız öz şəhərinə və yalnız sürücülərə yazır)
+ *  Müştərilər şəhərə bağlı deyil: müştəri elanı (customers / all) həmişə ümumidir (cityId = null).
+ * Oxunmamış sayı: Driver.newsSeenAt / Customer.newsSeenAt-dən sonra dərc olunan xəbərlər.
  */
 const newsSchema = new mongoose.Schema(
   {
@@ -12,6 +16,7 @@ const newsSchema = new mongoose.Schema(
     body: { type: String, required: true, trim: true, maxlength: 4000 },
     // info | promo | warning | update — tətbiqdə ikon/rəng seçimi üçün
     kind: { type: String, enum: ['info', 'promo', 'warning', 'update'], default: 'info' },
+    audience: { type: String, enum: ['drivers', 'customers', 'all'], default: 'drivers', index: true },
     cityId: { type: mongoose.Schema.Types.ObjectId, ref: 'City', default: null, index: true },
     pinned: { type: Boolean, default: false },
     // İstəyə bağlı keçid (məs. Play Store, sayt, forma)

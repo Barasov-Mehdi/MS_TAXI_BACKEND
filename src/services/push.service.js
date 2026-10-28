@@ -303,6 +303,9 @@ const CUSTOMER_STYLE = {
   scheduled_reminder: { channelId: 'c_schedule', sound: 'snd_trip', icon: 'ic_notif_route', color: '#1D5FD1' },
   scheduled_order: { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_notif_search', color: '#00B14F' },
   scheduled_failed: { channelId: 'c_trip_cancelled', sound: 'snd_cancelled', icon: 'ic_notif_cancel', color: '#D93025' },
+  // Yeniliklər (admin elanı) və yeni tətbiq versiyası. Tətbiqdə c_news kanalı yoxdursa Android standart kanalı istifadə edir.
+  news: { channelId: 'c_news', sound: 'snd_support', icon: 'ic_stat_notify', color: '#00B14F' },
+  app_update: { channelId: 'c_news', sound: 'snd_support', icon: 'ic_stat_notify', color: '#00B14F' },
 };
 const CUSTOMER_DEFAULT_STYLE = { channelId: 'c_trip', sound: 'snd_trip', icon: 'ic_stat_notify', color: '#00B14F' };
 
@@ -320,7 +323,7 @@ function customerAndroidNotification(type, tag) {
 
 // `channel` köhnə çağırışlarla uyğunluq üçün qəbul olunur; görünüş `type`-a görə seçilir.
 // eslint-disable-next-line no-unused-vars
-async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000 }) {
+async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000, imageUrl }) {
   const m = init('customer');
   if (!m || !customerId) return false;
   const customer = await Customer.findById(customerId).select('+fcmToken').lean();
@@ -330,7 +333,7 @@ async function sendToCustomer(customerId, { title, body, type, channel = 'trip',
   try {
     await sendVia('customer', m, {
       token: customer.fcmToken,
-      notification: { title: clip(title, 80), body: clip(body, 180) },
+      notification: { title: clip(title, 80), body: clip(body, 180), ...(imageUrl ? { imageUrl: String(imageUrl) } : {}) },
       data: payload,
       android: {
         priority: 'high',

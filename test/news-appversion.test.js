@@ -92,7 +92,7 @@ describe('news', () => {
     expect(String(models.News.create.mock.calls[0][0].cityId)).toBe(cityId);
     expect(realtime.toDriver).toHaveBeenCalledWith('d1', 'news_published', expect.objectContaining({ title: 'Ofis bağlıdır' }));
     expect(push.notifyNews).toHaveBeenCalledTimes(1);
-    expect(r.delivery).toEqual({ drivers: 1, pushed: 1, scheduled: false });
+    expect(r.delivery).toEqual({ drivers: 1, pushed: 1, customers: 0, customerPushed: null, scheduled: false });
   });
 
   test('gələcək tarixə planlaşdırılmış xəbər dərhal elan olunmur', async () => {

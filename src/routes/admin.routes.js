@@ -1085,13 +1085,16 @@ router.patch('/settings', requireSuperAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// =============================================================== Yeniliklər (sürücü tətbiqində "Yeniliklər" bölməsi)
-// Baş admin: hamıya (cityId boş) və ya bir şəhərə. Regional admin: yalnız öz şəhərinə (cityId avtomatik).
+// =============================================================== Yeniliklər (sürücü və müştəri tətbiqində "Yeniliklər" bölməsi)
+// audience: drivers (default) | customers | all.
+// Baş admin: hamıya (cityId boş) və ya bir şəhərin sürücülərinə. Regional admin: yalnız öz şəhərinin sürücülərinə.
+// Müştərilərə gedən elan (customers / all) şəhərə bağlanmır.
 
 const newsBody = {
   title: Joi.string().trim().min(2).max(120),
   body: Joi.string().trim().min(2).max(4000),
   kind: Joi.string().valid('info', 'promo', 'warning', 'update'),
+  audience: Joi.string().valid(...newsService.AUDIENCES),
   cityId: objectId.allow(null, ''),
   pinned: Joi.boolean(),
   linkUrl: Joi.string().trim().uri({ scheme: ['https', 'http', 'tel', 'market'] }).max(500).allow(null, ''),
@@ -1122,7 +1125,9 @@ router.post('/news/image', (req, res, next) =>
 
 router.get('/news', async (req, res, next) => {
   try {
-    ok(res, { news: await newsService.listForAdmin(scopeOf(req), { cityId: req.query.cityId, limit: req.query.limit }) });
+    ok(res, {
+      news: await newsService.listForAdmin(scopeOf(req), { cityId: req.query.cityId, audience: req.query.audience, limit: req.query.limit }),
+    });
   } catch (e) { next(e); }
 });
 
@@ -1138,7 +1143,7 @@ router.post(
   async (req, res, next) => {
     try {
       const r = await newsService.create(req.user, scopeOf(req), req.body);
-      await audit(req, 'NEWS_CREATE', 'News', r.news.id, null, { title: r.news.title, cityId: r.news.cityId, delivery: r.delivery });
+      await audit(req, 'NEWS_CREATE', 'News', r.news.id, null, { title: r.news.title, audience: r.news.audience, cityId: r.news.cityId, delivery: r.delivery });
       ok(res, r, {}, 201);
     } catch (e) { next(e); }
   }
