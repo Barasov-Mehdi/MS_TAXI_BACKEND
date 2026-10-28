@@ -110,8 +110,27 @@ test('köhnə cihazın refresh tokeni SESSION_REPLACED, yeni cihazınkı işləy
   await expect(authService.refresh(a.refreshToken)).rejects.toMatchObject({ code: 'SESSION_REPLACED' });
   const r = await authService.refresh(b.refreshToken);
   expect((await run(r.accessToken)).err).toBeUndefined();
-  // Rotasiya olunmuş köhnə refresh tokeni adi INVALID_REFRESH verir (eyni sessiya)
-  await expect(authService.refresh(b.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
+});
+
+test('rotasiyadan sonra köhnə refresh tokeni 60 san ərzində qəbul olunur (cavab itibsə çıxış olmasın), sonra yox', async () => {
+  const a = await authService.login({ phone: '+994501112233', password: 'secret1' });
+  const r1 = await authService.refresh(a.refreshToken);
+  // Cavab itdi, tətbiq köhnə tokenlə təkrar sorğu göndərir
+  const r2 = await authService.refresh(a.refreshToken);
+  expect((await run(r2.accessToken)).err).toBeUndefined();
+  expect((await run(r1.accessToken)).err).toBeUndefined();
+  // Güzəşt bitdi
+  const row = mockDb.refresh.find((x) => x.rotatedAt);
+  row.rotatedAt = new Date(Date.now() - 61 * 1000);
+  await expect(authService.refresh(a.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
+});
+
+test('çıxış edilmiş tokenə güzəşt yoxdur', async () => {
+  const a = await authService.login({ phone: '+994501112233', password: 'secret1' });
+  const r1 = await authService.refresh(a.refreshToken);
+  await authService.logout(r1.refreshToken);
+  await expect(authService.refresh(r1.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
+  await expect(authService.refresh(a.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
 });
 
 test('girişdə köhnə cihazın native tokeni, FCM tokeni silinir və soketi bağlanır', async () => {

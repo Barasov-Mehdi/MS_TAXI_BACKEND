@@ -423,13 +423,24 @@ router.post(
 // FCM cihaz tokeni: tətbiq açılanda / token yenilənəndə göndərilir (push bildirişləri üçün)
 router.post(
   '/fcm-token',
-  validated(Joi.object({ token: Joi.string().trim().min(20).max(4096).required() })),
+  validated(Joi.object({
+    token: Joi.string().trim().min(20).max(4096).required(),
+    // İstəyə bağlı: cihazdakı tətbiq versiyası (yeniləmə bildirişləri üçün)
+    appVersionCode: Joi.number().integer().min(1),
+    appVersionName: Joi.string().trim().max(30).allow(''),
+  })),
   async (req, res, next) => {
     try {
       const { Customer } = require('../models');
       // Eyni cihaz başqa hesabla açılıbsa köhnə hesabdan token götürülür (bildiriş səhv adama getməsin)
       await Customer.updateMany({ fcmToken: req.body.token, _id: { $ne: req.customer._id } }, { $set: { fcmToken: null } });
       await Customer.updateOne({ _id: req.customer._id }, { $set: { fcmToken: req.body.token, fcmTokenUpdatedAt: new Date() } });
+      if (req.body.appVersionCode) {
+        await require('../services/appVersion.service').rememberCustomerVersion(req.customer._id, {
+          versionCode: req.body.appVersionCode,
+          versionName: req.body.appVersionName,
+        });
+      }
       ok(res, { saved: true });
     } catch (e) { next(e); }
   }

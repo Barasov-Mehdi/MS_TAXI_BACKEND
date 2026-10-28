@@ -9,5 +9,8 @@ module.exports = mongoose.model(
     revoked: { type: Boolean, default: false },
     // Sürücü sessiyasının id-si (User.activeSessionId). Başqa cihazdan giriş olunanda köhnə sessiya tanınır.
     sessionId: { type: String, default: null },
+    // Rotasiya vaxtı (yenisi verilib). Qısa güzəşt müddətində köhnə token bir daha qəbul olunur:
+    // cavab şəbəkədə itəndə / tətbiq yarımçıq bağlananda sürücü səbəbsiz çıxış etməsin.
+    rotatedAt: { type: Date, default: null },
   }, { timestamps: true })
 );

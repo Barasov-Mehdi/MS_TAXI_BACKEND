@@ -56,6 +56,8 @@ function attachWebsocket(httpServer) {
       if (user.role === 'CUSTOMER') {
         const c = await Customer.findOne({ userId: user._id });
         if (c) socket.join(`customer:${c._id}`);
+        // Ümumi yayım otağı (məs. yeni tətbiq versiyası)
+        socket.join('customers');
       }
       if (user.role === 'DRIVER') {
         const d = await Driver.findOne({ userId: user._id });

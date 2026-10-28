@@ -50,6 +50,8 @@ module.exports = {
     t.emit(event, payload);
   },
   toParties: emitToParties,
+  // Bütün qoşulu müştəri tətbiqlərinə yayım (məs. yeni versiya)
+  toCustomers: (event, payload) => emit('customers', event, payload),
   // Sürücülərə yayım: cityId verilibsə yalnız həmin şəhər, yoxsa bütün qoşulu sürücülər
   toDrivers: (cityId, event, payload) => emit(cityId ? `drivers:city:${cityId}` : 'drivers', event, payload),
   // Admin paneli: cityId null → bütün adminlər; dolu → baş adminlər + həmin şəhərin adminləri

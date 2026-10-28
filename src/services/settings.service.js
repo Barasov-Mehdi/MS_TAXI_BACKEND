@@ -46,6 +46,14 @@ const DEFAULTS = {
   driverAndroidMinCode: 1,
   driverAndroidNotes: [],
   driverAndroidStoreUrl: 'https://play.google.com/store/apps/details?id=com.barasdrivers',
+
+  // ---- Müştəri tətbiqi (Android) versiyası: GET /app/version?app=customer ----
+  // Admin paneldən PUT /admin/app-version { app: 'customer', ... } ilə yenilənir (məntiq sürücü tətbiqi ilə eynidir).
+  customerAndroidLatestCode: 1,
+  customerAndroidLatestName: '',
+  customerAndroidMinCode: 1,
+  customerAndroidNotes: [],
+  customerAndroidStoreUrl: 'https://play.google.com/store/apps/details?id=com.barastaxi',
 };
 
 let cache = null;

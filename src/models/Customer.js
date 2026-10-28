@@ -14,6 +14,9 @@ const customerSchema = new mongoose.Schema(
     // FCM cihaz tokeni: tətbiq bağlı olanda sifariş bildirişləri (select:false - API cavablarına düşmür)
     fcmToken: { type: String, default: null, select: false },
     fcmTokenUpdatedAt: { type: Date, default: null },
+    // Cihazdakı tətbiq versiyası: köhnə versiyalı müştərilərə "Yeni versiya" bildirişi üçün
+    appVersionCode: { type: Number, default: null, index: true },
+    appVersionName: { type: String, default: null },
   },
   { timestamps: true }
 );
