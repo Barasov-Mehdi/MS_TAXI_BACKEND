@@ -29,3 +29,15 @@ Miqrasiya lazım deyil: `language` sahəsi olmayan köhnə sənədlər üçün s
 
 Təqdim olunan arxivdəki `.env` faylında MongoDB şifrəsi, SMS API açarı və JWT açarları açıq şəkildə idi.
 Bu fayl paketə daxil edilməyib, lakin açarları dəyişdirmək (rotate) tövsiyə olunur.
+
+## Yeniləmə: xəritədə boş / məşğul sürücülər (geriyə uyğun)
+
+| Fayl | Dəyişiklik | Niyə |
+|---|---|---|
+| `src/services/location.service.js` | `findNearbyDrivers({..., includeBusy})`: `includeBusy: true` göndərilərsə aktiv sifarişi olan sürücülər də qaytarılır, hər sürücüdə `busy` bayrağı (`false` = boş, `true` = sifarişdə). Silinmiş sürücülər (`deletedAt`) xəritədə görünmür. | Müştəri xəritəsində boş maşınlar yaşıl, məşğul maşınlar sarı göstərilir |
+| `test/nearby-busy.test.js` | Yeni test: köhnə tətbiq üçün davranış dəyişməyib, yeni tətbiq `busy` alır, şəxsi məlumat (ad, nömrə, sifariş id) qaytarılmır | Uyğunluq |
+
+Socket: `subscribe_nearby {latitude, longitude, radiusM, includeBusy: true}` → `nearby_drivers {drivers: [{id, latitude, longitude, heading, busy}]}`.
+Köhnə müştəri tətbiqi `includeBusy` göndərmir → əvvəlki kimi yalnız boş sürücüləri alır.
+
+Qeyd: arxivdəki `node_modules`-da `multer` yoxdur, ona görə `admin.routes` / `driver.routes` testləri lokalda düşür — `npm ci` ilə düzəlir (package.json-da var).

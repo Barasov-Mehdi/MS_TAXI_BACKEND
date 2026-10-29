@@ -126,13 +126,21 @@ async function updateCustomerLocation(customer, payload) {
 // Xəritədə göstərmək üçün "köhnə" sayılan konum yaşı (sürücü tətbiqi bağlayıbsa görünməsin).
 const NEARBY_MAX_AGE_MS = 3 * 60 * 1000;
 const NEARBY_MAX_RESULTS = 12;
+const NEARBY_MAX_RESULTS_WITH_BUSY = 20;
 
 // Daxili sürücü id-si müştəriyə açılmasın: sabit, amma geri qaytarıla bilməyən qısa id.
 function publicDriverId(id) {
   return crypto.createHash('sha1').update(String(id)).digest('hex').slice(0, 12);
 }
 
-async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
+/**
+ * Müştəri xəritəsi üçün yaxınlıqdakı sürücülər.
+ *  - Standart (köhnə tətbiqlər): yalnız boş sürücülər.
+ *  - includeBusy: true → aktiv sifarişi olan (məşğul) sürücülər də qaytarılır, hər birində `busy` bayrağı:
+ *      busy: false → boş (xəritədə yaşıl), busy: true → sifarişdədir (xəritədə sarı).
+ * Sürücünün şəxsi məlumatı (ad, nömrə, sifariş) qaytarılmır.
+ */
+async function findNearbyDrivers({ latitude, longitude, radiusM, includeBusy } = {}) {
   const lat = Number(latitude);
   const lng = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
@@ -142,12 +150,13 @@ async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
   const maxR = settings.maxDriverRadius || 5000;
   const radius = Math.min(Math.max(Number(radiusM) || 3000, 200), maxR);
 
+  const withBusy = includeBusy === true || includeBusy === 'true' || includeBusy === 1;
   const cutoff = new Date(Date.now() - NEARBY_MAX_AGE_MS);
-  const rows = await Driver.find({
+  const query = {
     isOnline: true,
     isActive: true,
     isVerified: true,
-    currentOrderId: null,
+    deletedAt: null,
     locationUpdatedAt: { $gte: cutoff },
     // Köhnə koordinatlı sürücü xəritədə görünməsin (köhnə sənədlərdə locationFixAt yoxdur - onlar üçün locationUpdatedAt)
     $and: [{ $or: [{ locationFixAt: { $gte: cutoff } }, { locationFixAt: null }] }],
@@ -157,9 +166,12 @@ async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
         $maxDistance: radius,
       },
     },
-  })
-    .select('location locationMeta')
-    .limit(NEARBY_MAX_RESULTS)
+  };
+  if (!withBusy) query.currentOrderId = null;
+
+  const rows = await Driver.find(query)
+    .select('location locationMeta currentOrderId')
+    .limit(withBusy ? NEARBY_MAX_RESULTS_WITH_BUSY : NEARBY_MAX_RESULTS)
     .lean();
 
   return rows.map((d) => ({
@@ -167,6 +179,7 @@ async function findNearbyDrivers({ latitude, longitude, radiusM } = {}) {
     latitude: d.location.coordinates[1],
     longitude: d.location.coordinates[0],
     heading: d.locationMeta ? d.locationMeta.heading : null,
+    busy: !!d.currentOrderId,
   }));
 }
 
