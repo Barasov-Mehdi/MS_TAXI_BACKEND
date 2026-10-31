@@ -103,7 +103,9 @@ function fareBreakdown(o) {
   }
   if (discount > 0) lines.push({ key: 'discount', amount: -discount, good: true });
   if (stopped && Number.isFinite(planned) && total !== planned) lines.push({ key: 'stoppedAdj', amount: total - planned, warn: true });
-  return { lines: parts.length || discount || stopped ? lines : [], total };
+  // "Məsafə" və "Yuvarlaqlaşdırma" sətirləri göstərilmir (tətbiqdəki kimi)
+  const visible = lines.filter((l) => l.key !== 'distFare' && l.key !== 'rounding');
+  return { lines: parts.length || discount || stopped ? visible : [], total };
 }
 
 const RECEIPT_STATUSES = [OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, OrderStatus.COMPLETED].filter(Boolean);
