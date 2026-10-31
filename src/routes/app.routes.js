@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { ok, AppError } = require('../utils/errors');
 const appVersion = require('../services/appVersion.service');
 const newsImages = require('../services/newsImage.service');
+const avatarImages = require('../services/avatar.service');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
@@ -56,5 +57,14 @@ images.get('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/** Profil şəkilləri (giriş tələb etmir): GET /app/avatars/:id */
+const avatars = require('express').Router();
+avatars.get('/:id', async (req, res, next) => {
+  try {
+    await avatarImages.stream(req.params.id, res);
+  } catch (e) { next(e); }
+});
+
 module.exports = router;
 module.exports.images = images;
+module.exports.avatars = avatars;

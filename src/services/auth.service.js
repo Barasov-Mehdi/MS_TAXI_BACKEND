@@ -345,6 +345,7 @@ function publicUser(user) {
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
+    avatarUrl: user.avatarUrl || null,
     // Admin paneli üçün: null → baş admin, dolu → regional admin (yalnız bu şəhər)
     ...(user.role === 'ADMIN' ? { adminCityId: user.adminCityId || null, isSuperAdmin: !user.adminCityId } : {}),
   };

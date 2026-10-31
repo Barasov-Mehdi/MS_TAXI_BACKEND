@@ -1,6 +1,7 @@
 const { Customer, User, Order, SavedPlace, ScheduledRide, RefreshToken, AuditLog } = require('../models');
 const { AppError } = require('../utils/errors');
 const { isActive } = require('../utils/orderStatus');
+const avatarService = require('./avatar.service');
 
 /**
  * Müştəri hesabını SİL (müştərinin öz istəyi ilə; Google Play "hesabı silmə" tələbi).
@@ -53,6 +54,7 @@ async function deleteCustomerAccount({ user, customer, reason = '', ip = null })
     u.email = null;
     u.username = undefined;
     u.usernameLower = undefined;
+    await avatarService.removeByUrl(u.avatarUrl).catch(() => {});
     u.avatarUrl = null;
     u.phoneVerifyCode = null;
     u.phoneVerifyExpiresAt = null;

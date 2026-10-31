@@ -17,6 +17,11 @@ const cityService = require('../services/city.service');
 const customerSupport = require('../services/customerSupport.service');
 const newsService = require('../services/news.service');
 const customerAccount = require('../services/customerAccount.service');
+const avatarService = require('../services/avatar.service');
+const multer = require('multer');
+
+// Profil şəkli yaddaşda qəbul olunur (diskə yazılmır) → GridFS
+const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: avatarService.MAX_BYTES, files: 1 } }).single('file');
 
 function validated(schema) {
   return (req, res, next) => {
@@ -53,6 +58,27 @@ router.get('/me', async (req, res, next) => {
 });
 
 // ---------------------------------------------------------------- Hesabın silinməsi
+// POST /customers/me/avatar (multipart, sahə "file") → { user }  — profil şəklini qoy / dəyiş
+router.post('/me/avatar', (req, res, next) =>
+  avatarUpload(req, res, async (err) => {
+    try {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') throw new AppError('FILE_TOO_LARGE', 'Şəkil ən çox 3 MB ola bilər', 413);
+        throw new AppError('VALIDATION_ERROR', 'Fayl yüklənmədi', 400);
+      }
+      await avatarService.setForUser(req.user, req.file, req);
+      ok(res, { user: authService.publicUser(req.user) }, {}, 201);
+    } catch (e) { next(e); }
+  }));
+
+// DELETE /customers/me/avatar → { user }  — profil şəklini sil
+router.delete('/me/avatar', async (req, res, next) => {
+  try {
+    await avatarService.clearForUser(req.user);
+    ok(res, { user: authService.publicUser(req.user) });
+  } catch (e) { next(e); }
+});
+
 // POST /customers/me/delete { reason? } → { deleted: true }
 // Aktiv sifariş varsa 409 ACTIVE_ORDER. Uğurlu olanda bütün sessiyalar ləğv olunur (tətbiq çıxış edir).
 router.post(
