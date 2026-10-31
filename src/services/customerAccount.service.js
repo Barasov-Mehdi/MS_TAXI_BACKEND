@@ -79,4 +79,44 @@ async function deleteCustomerAccount({ user, customer, reason = '', ip = null })
   return { deleted: true };
 }
 
-module.exports = { deleteCustomerAccount };
+// ---------------------------------------------------------------- Saytdan silmə (Google Play tələbi)
+// Tətbiqi artıq silmiş istifadəçi də hesabını silə bilsin: sayt → nömrə → SMS kod → təsdiq.
+// Giriş (login) edilmir, yeni hesab yaranmır, telefondakı tətbiqin sessiyası da ləğv olunur.
+
+async function findCustomerByPhone(phone) {
+  // eslint-disable-next-line global-require
+  const { normalizePhone } = require('../utils/validators');
+  const p = normalizePhone(phone);
+  if (!p) throw new AppError('VALIDATION_ERROR', 'Telefon nömrəsi düzgün deyil', 400);
+  const user = await User.findOne({ phone: p, role: 'CUSTOMER' });
+  const customer = user ? await Customer.findOne({ userId: user._id }) : null;
+  return { phone: p, user, customer };
+}
+
+/**
+ * Kod göndərilir yalnız aktiv sərnişin hesabı varsa. Cavab hər halda eynidir
+ * ("hesab varsa SMS göndərildi") — nömrənin qeydiyyatda olub-olmadığı bilinməsin.
+ */
+async function requestWebDeletion(phone) {
+  // eslint-disable-next-line global-require
+  const otpService = require('./otp.service');
+  const { phone: p, user, customer } = await findCustomerByPhone(phone);
+  if (user && user.isActive !== false && customer && !customer.deletedAt) {
+    const r = await otpService.requestOtp(p, 'delete');
+    return { sent: true, ...(r && r.devCode ? { devCode: r.devCode } : {}) };
+  }
+  return { sent: true };
+}
+
+async function confirmWebDeletion({ phone, code, reason = '', ip = null }) {
+  // eslint-disable-next-line global-require
+  const otpService = require('./otp.service');
+  const { phone: p, user, customer } = await findCustomerByPhone(phone);
+  // Kod həmişə yoxlanılır (hesab olmasa da) — cavabdan nömrənin varlığı bilinməsin
+  await otpService.verifyOtp(p, code, 'delete');
+  if (!user || !customer) throw new AppError('ACCOUNT_NOT_FOUND', 'Bu nömrə ilə hesab tapılmadı', 404);
+  if (customer.deletedAt) return { deleted: true };
+  return deleteCustomerAccount({ user, customer, reason: `[sayt] ${String(reason || '').trim()}`.trim(), ip });
+}
+
+module.exports = { deleteCustomerAccount, requestWebDeletion, confirmWebDeletion };

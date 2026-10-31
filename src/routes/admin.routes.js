@@ -250,6 +250,21 @@ router.get('/orders/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /admin/orders/:id/receipt?lang=az → { fileName, mime, base64 } — müştəriyə verilən PDF qəbzin eynisi
+router.get('/orders/:id/receipt', async (req, res, next) => {
+  try {
+    const receiptService = require('../services/receipt.service');
+    const order = await loadOrderInScope(req, req.params.id);
+    if (!receiptService.canHaveReceipt(order)) {
+      throw new AppError('RECEIPT_NOT_AVAILABLE', 'Qəbz yalnız bitmiş səfər üçün verilir', 409);
+    }
+    const lang = ['az', 'ru', 'en', 'tr'].includes(String(req.query.lang)) ? String(req.query.lang) : 'az';
+    const pdf = await receiptService.buildReceiptPdf({ order, driver: await receiptService.loadReceiptDriver(order), lang });
+    res.set('Cache-Control', 'no-store');
+    ok(res, { fileName: receiptService.receiptFileName(order), mime: 'application/pdf', base64: pdf.toString('base64') });
+  } catch (e) { next(e); }
+});
+
 /** Sifarişin tam təfərrüatı: sürücü, müştəri, status tarixçəsi, reytinq, şikayətlər, problemlər, qazanc, çat. */
 router.get('/orders/:id/details', async (req, res, next) => {
   try {
@@ -1280,13 +1295,13 @@ router.put(
 );
 
 // ---------------------------------------------------------------- Texniki işlər rejimi
-// GET /admin/maintenance → { enabled, message, until }
+// GET /admin/maintenance → { enabled, message, until }    — bütün adminlər (paneldə xəbərdarlıq zolağı)
 // PUT /admin/maintenance { enabled, message?, until? }  — yalnız baş admin
 //   enabled=true  → müştəri tətbiqində "Texniki işlər aparılır" pəncərəsi, yeni sifariş bağlanır
 //   enabled=false → hər şey normal; mətn və vaxt təmizlənir
 const maintenance = require('../services/maintenance.service');
 
-router.get('/maintenance', requireSuperAdmin, async (req, res, next) => {
+router.get('/maintenance', async (req, res, next) => {
   try {
     ok(res, await maintenance.getStatus());
   } catch (e) { next(e); }

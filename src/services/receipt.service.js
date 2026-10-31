@@ -238,8 +238,25 @@ function buildReceiptPdf({ order, driver, lang = 'az' }) {
   });
 }
 
+/** Qəbz üçün sürücü məlumatı (ad + avtomobil). Admin paneli üçün; sərnişin route-u öz publicDriver()-ini işlədir. */
+async function loadReceiptDriver(order) {
+  if (!order || !order.driverId) return null;
+  // eslint-disable-next-line global-require
+  const { Driver, User, Vehicle } = require('../models');
+  const d = await Driver.findById(order.driverId).populate('vehicleId').lean();
+  const u = d ? await User.findById(d.userId).select('firstName lastName').lean() : null;
+  if (!d || !u) return null;
+  let v = d.vehicleId && d.vehicleId.plateNumber !== undefined ? d.vehicleId : null;
+  if (!v) v = await Vehicle.findOne({ driverId: d._id }).sort({ isActive: -1, updatedAt: -1 }).lean();
+  return {
+    firstName: u.firstName,
+    lastName: u.lastName,
+    vehicle: v ? { make: v.make || '', model: v.model || '', color: v.color || '', plateNumber: v.plateNumber || '' } : null,
+  };
+}
+
 function receiptFileName(order) {
   return `Baras-qebz-${shortId(order)}`;
 }
 
-module.exports = { buildReceiptPdf, canHaveReceipt, receiptFileName, formatPlate, L };
+module.exports = { buildReceiptPdf, canHaveReceipt, receiptFileName, loadReceiptDriver, formatPlate, L };

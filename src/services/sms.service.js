@@ -7,7 +7,7 @@ const { AppError } = require('../utils/errors');
  * Header: X-API-Key, X-Idempotency-Key. Body: { to, text, senderName }
  */
 async function sendOtpSms(phone, code, purpose = 'login') {
-  const label = purpose === 'reset' ? 'parol sıfırlama kodunuz' : 'təsdiq kodunuz';
+  const label = purpose === 'reset' ? 'parol sıfırlama kodunuz' : purpose === 'delete' ? 'hesabı silmə kodunuz' : 'təsdiq kodunuz';
   const text = `Baras: ${label} ${code}. Kodu heç kimlə paylaşmayın.`;
 
   if (!config.sms.apiKey) {

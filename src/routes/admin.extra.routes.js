@@ -170,7 +170,10 @@ router.get('/customers', async (req, res, next) => {
     const q = {};
     const scoped = await scopedCustomerIds(req);
     if (scoped) q._id = { $in: scoped };
-    if (req.query.q || req.query.status) {
+    // Silinmiş hesablar ayrıca filtrdir; "aktiv" / "bloklanmış" siyahısına düşmür
+    if (req.query.status === 'deleted') q.deletedAt = { $ne: null };
+    else if (req.query.status === 'active' || req.query.status === 'blocked') q.deletedAt = null;
+    if (req.query.q || req.query.status === 'blocked' || req.query.status === 'active') {
       const uq = { role: 'CUSTOMER' };
       if (req.query.q) {
         const text = String(req.query.q).trim().slice(0, 50);
@@ -183,7 +186,7 @@ router.get('/customers', async (req, res, next) => {
       q.userId = { $in: await User.find(uq).distinct('_id') };
     }
     const [docs, total] = await Promise.all([
-      Customer.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('userId', 'firstName lastName username phone isActive createdAt').lean(),
+      Customer.find(q).sort({ createdAt: -1 }).skip(skip).limit(limit).populate('userId', 'firstName lastName username phone isActive createdAt avatarKey deletedPhone').lean(),
       Customer.countDocuments(q),
     ]);
     const ids = docs.map((c) => c._id);
@@ -207,9 +210,12 @@ router.get('/customers', async (req, res, next) => {
         return {
           _id: c._id,
           userId: u._id,
-          name: views.displayName(u),
-          phone: u.phone || '',
+          name: c.deletedAt ? '' : views.displayName(u),
+          // Silinmiş hesab: əsl nömrə deletedPhone-dadır (phone = "deleted:...")
+          phone: c.deletedAt ? u.deletedPhone || '' : u.phone || '',
           isActive: u.isActive !== false,
+          deletedAt: c.deletedAt || null,
+          avatarKey: u.avatarKey || null,
           createdAt: c.createdAt,
           orders: n.total || 0,
           completed: n.completed || 0,
@@ -232,6 +238,12 @@ async function loadCustomerInScope(req, id) {
     throw new AppError('NOT_FOUND', 'Müştəri tapılmadı', 404);
   }
   return c;
+}
+
+/** Müştəri hesabını özü silibsə yazdığı səbəb (AuditLog). */
+async function deletionReason(customerId) {
+  const log = await AuditLog.findOne({ action: 'CUSTOMER_ACCOUNT_DELETED', entityId: customerId }).sort({ createdAt: -1 }).lean().catch(() => null);
+  return log ? log.reason || '' : '';
 }
 
 router.get('/customers/:id', async (req, res, next) => {
@@ -266,8 +278,11 @@ router.get('/customers/:id', async (req, res, next) => {
         firstName: u.firstName || '',
         lastName: u.lastName || '',
         username: u.username || '',
-        phone: u.phone || '',
+        phone: c.deletedAt ? u.deletedPhone || '' : u.phone || '',
         isActive: u.isActive !== false,
+        deletedAt: c.deletedAt || null,
+        deleteReason: c.deletedAt ? await deletionReason(c._id) : null,
+        avatarKey: u.avatarKey || null,
         createdAt: c.createdAt,
         // Tətbiq versiyası / platforma / dil (yeniləmə bildirişləri və dəstək üçün)
         appVersionCode: c.appVersionCode || null,
@@ -308,6 +323,8 @@ router.post(
 router.post('/customers/:id/unblock', async (req, res, next) => {
   try {
     const c = await loadCustomerInScope(req, req.params.id);
+    // Silinmiş hesab bərpa olunmur: nömrə azad edilib, şəxsi məlumatlar təmizlənib
+    if (c.deletedAt) throw new AppError('ACCOUNT_DELETED', 'Hesab müştəri tərəfindən silinib, bərpa olunmur', 409);
     await User.updateOne({ _id: c.userId._id }, { $set: { isActive: true } });
     await audit(req, 'CUSTOMER_UNBLOCK', 'Customer', c._id, false, true, req.body && req.body.reason);
     ok(res, { blocked: false });

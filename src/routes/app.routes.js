@@ -4,6 +4,29 @@ const appVersion = require('../services/appVersion.service');
 const newsImages = require('../services/newsImage.service');
 const avatarImages = require('../services/avatar.service');
 const maintenance = require('../services/maintenance.service');
+const Joi = require('joi');
+const rateLimit = require('express-rate-limit');
+const customerAccount = require('../services/customerAccount.service');
+
+const limiter = (max) => rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  validate: { trustProxy: true },
+  handler: (req, res, next) => next(new AppError('TOO_MANY_REQUESTS', 'Çox sorğu göndərildi, bir az sonra yenidən cəhd edin', 429)),
+});
+const deletionRequestLimiter = limiter(6);
+const deletionConfirmLimiter = limiter(20);
+
+function body(schema) {
+  return (req, res, next) => {
+    const { error, value } = schema.validate(req.body || {}, { stripUnknown: true });
+    if (error) return next(new AppError('VALIDATION_ERROR', error.details[0].message, 400));
+    req.body = value;
+    return next();
+  };
+}
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
@@ -57,6 +80,37 @@ router.get('/status', async (req, res, next) => {
     ok(res, { maintenance: await maintenance.getStatus(), serverTime: new Date().toISOString() });
   } catch (e) { next(e); }
 });
+
+/**
+ * Hesabın saytdan silinməsi (girişsiz; Google Play "hesabı silmə linki" tələbi):
+ *   POST /app/account-deletion/request { phone }              → { sent: true }  (hesab varsa SMS kod)
+ *   POST /app/account-deletion/confirm { phone, code, reason } → { deleted: true }
+ */
+router.post(
+  '/account-deletion/request',
+  deletionRequestLimiter,
+  body(Joi.object({ phone: Joi.string().trim().max(30).required().messages({ 'any.required': 'Telefon nömrəsini yazın', 'string.empty': 'Telefon nömrəsini yazın' }) })),
+  async (req, res, next) => {
+    try {
+      ok(res, await customerAccount.requestWebDeletion(req.body.phone));
+    } catch (e) { next(e); }
+  }
+);
+
+router.post(
+  '/account-deletion/confirm',
+  deletionConfirmLimiter,
+  body(Joi.object({
+    phone: Joi.string().trim().max(30).required(),
+    code: Joi.string().pattern(/^\d{6}$/).required().messages({ 'string.pattern.base': 'Kod 6 rəqəmdən ibarət olmalıdır', 'any.required': 'SMS kodu yazın' }),
+    reason: Joi.string().trim().allow('').max(300),
+  })),
+  async (req, res, next) => {
+    try {
+      ok(res, await customerAccount.confirmWebDeletion({ ...req.body, ip: req.ip }));
+    } catch (e) { next(e); }
+  }
+);
 
 /**
  * "Yeniliklər" şəkilləri (giriş tələb etmir). server.js-də rate-limit-dən ƏVVƏL qoşulur:

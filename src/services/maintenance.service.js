@@ -39,7 +39,8 @@ function broadcast(status) {
     // eslint-disable-next-line global-require
     const rt = require('../websocket/emitter');
     if (rt.toCustomers) rt.toCustomers('maintenance_changed', status);
-    if (rt.toAdmin) rt.toAdmin('maintenance_changed', status);
+    // Bütün adminlər (regional da) paneldə xəbərdarlıq zolağını görsün
+    if (rt.toAdminsFor) rt.toAdminsFor(null, 'maintenance_changed', status);
   } catch (_) { /* səssiz */ }
 }
 

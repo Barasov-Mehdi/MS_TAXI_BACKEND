@@ -13,7 +13,7 @@ jest.mock('../src/services/settings.service', () => ({
 }));
 jest.mock('../src/websocket/emitter', () => ({
   toCustomers: (event, payload) => mockEmits.push({ to: 'customers', event, payload }),
-  toAdmin: (event, payload) => mockEmits.push({ to: 'admin', event, payload }),
+  toAdminsFor: (city, event, payload) => mockEmits.push({ to: 'admin', event, payload }),
 }));
 jest.mock('../src/services/appVersion.service', () => ({}));
 jest.mock('../src/services/newsImage.service', () => ({ stream: jest.fn() }));
