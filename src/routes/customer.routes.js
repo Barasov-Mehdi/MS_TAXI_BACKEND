@@ -19,6 +19,7 @@ const newsService = require('../services/news.service');
 const customerAccount = require('../services/customerAccount.service');
 const avatarService = require('../services/avatar.service');
 const { blockDuringMaintenance } = require('../services/maintenance.service');
+const receiptService = require('../services/receipt.service');
 const multer = require('multer');
 
 // Profil şəkli yaddaşda qəbul olunur (diskə yazılmır) → GridFS
@@ -458,6 +459,23 @@ router.get('/orders/:id', async (req, res, next) => {
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
     const driverPublic = await publicDriver(order);
     ok(res, { order, driver: driverPublic });
+  } catch (e) { next(e); }
+});
+
+// GET /customers/orders/:id/receipt?lang=az → { fileName, mime, base64 }
+// PDF qəbz hər dəfə sifarişdən yenidən qurulur — bazaya / diskə heç nə yazılmır.
+router.get('/orders/:id/receipt', async (req, res, next) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
+    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    if (!receiptService.canHaveReceipt(order)) {
+      throw new AppError('RECEIPT_NOT_AVAILABLE', 'Qəbz yalnız bitmiş səfər üçün verilir', 409);
+    }
+    const lang = CUSTOMER_LANGUAGES.includes(String(req.query.lang)) ? String(req.query.lang) : req.customer.language || 'az';
+    const driver = await publicDriver(order);
+    const pdf = await receiptService.buildReceiptPdf({ order, driver, lang });
+    res.set('Cache-Control', 'no-store');
+    ok(res, { fileName: receiptService.receiptFileName(order), mime: 'application/pdf', base64: pdf.toString('base64') });
   } catch (e) { next(e); }
 });
 
