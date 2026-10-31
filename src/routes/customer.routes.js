@@ -18,6 +18,7 @@ const customerSupport = require('../services/customerSupport.service');
 const newsService = require('../services/news.service');
 const customerAccount = require('../services/customerAccount.service');
 const avatarService = require('../services/avatar.service');
+const { blockDuringMaintenance } = require('../services/maintenance.service');
 const multer = require('multer');
 
 // Profil şəkli yaddaşda qəbul olunur (diskə yazılmır) → GridFS
@@ -305,7 +306,8 @@ router.post('/orders/quote', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/orders', async (req, res, next) => {
+// Texniki işlər rejimində yeni sifariş qəbul edilmir (503 MAINTENANCE); aktiv səfərlər davam edir
+router.post('/orders', blockDuringMaintenance, async (req, res, next) => {
   try {
     const { promoCode } = req.body;
     const paymentMethod = req.body.paymentMethod

@@ -3,6 +3,7 @@ const { ok, AppError } = require('../utils/errors');
 const appVersion = require('../services/appVersion.service');
 const newsImages = require('../services/newsImage.service');
 const avatarImages = require('../services/avatar.service');
+const maintenance = require('../services/maintenance.service');
 const jwt = require('jsonwebtoken');
 const config = require('../config');
 
@@ -43,6 +44,17 @@ router.get('/version', async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     rememberCaller(req, app, platform); // gözlənilmir
     ok(res, await appVersion.check({ app, platform, versionCode: req.query.versionCode }));
+  } catch (e) { next(e); }
+});
+
+/**
+ * Sistemin vəziyyəti (giriş tələb etmir): tətbiq açılanda və texniki işlər pəncərəsində "Yenidən yoxla" ilə.
+ *   GET /app/status → { maintenance: { enabled, message, until } }
+ */
+router.get('/status', async (req, res, next) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    ok(res, { maintenance: await maintenance.getStatus(), serverTime: new Date().toISOString() });
   } catch (e) { next(e); }
 });
 

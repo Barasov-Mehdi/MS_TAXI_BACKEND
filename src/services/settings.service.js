@@ -68,6 +68,11 @@ const DEFAULTS = {
   customerIosMinCode: 1,
   customerIosNotes: [],
   customerIosStoreUrl: '',
+
+  // ---- Texniki işlər rejimi (services/maintenance.service.js): PUT /admin/maintenance ----
+  maintenanceEnabled: false,
+  maintenanceMessage: '',
+  maintenanceUntil: null,
 };
 
 let cache = null;

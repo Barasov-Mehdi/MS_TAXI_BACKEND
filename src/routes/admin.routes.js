@@ -1279,6 +1279,37 @@ router.put(
   }
 );
 
+// ---------------------------------------------------------------- Texniki işlər rejimi
+// GET /admin/maintenance → { enabled, message, until }
+// PUT /admin/maintenance { enabled, message?, until? }  — yalnız baş admin
+//   enabled=true  → müştəri tətbiqində "Texniki işlər aparılır" pəncərəsi, yeni sifariş bağlanır
+//   enabled=false → hər şey normal; mətn və vaxt təmizlənir
+const maintenance = require('../services/maintenance.service');
+
+router.get('/maintenance', requireSuperAdmin, async (req, res, next) => {
+  try {
+    ok(res, await maintenance.getStatus());
+  } catch (e) { next(e); }
+});
+
+router.put(
+  '/maintenance',
+  requireSuperAdmin,
+  validated(Joi.object({
+    enabled: Joi.boolean().required(),
+    message: Joi.string().trim().max(maintenance.MAX_MESSAGE).allow(''),
+    until: Joi.date().iso().allow(null, ''),
+  })),
+  async (req, res, next) => {
+    try {
+      const before = await maintenance.getStatus();
+      const r = await maintenance.setStatus(req.body);
+      await audit(req, r.enabled ? 'MAINTENANCE_ON' : 'MAINTENANCE_OFF', 'SystemSetting', null, before, r);
+      ok(res, r);
+    } catch (e) { next(e); }
+  }
+);
+
 // Əlavə bölmələr: sənədlər, namizəd sürücülər, sərnişinlər, canlı xəritə, hesabatlar, jurnal
 router.use(require('./admin.extra.routes'));
 

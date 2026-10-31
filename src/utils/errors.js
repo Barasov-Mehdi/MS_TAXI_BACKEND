@@ -34,13 +34,15 @@ function errorHandler(err, req, res, next) {
   const code = e.code && typeof e.code === 'string' ? e.code : 'INTERNAL_ERROR';
 
   // 5xx xətalar əvvəl heç yerdə loglanmırdı: production-da səbəbi tapmaq mümkün deyildi.
-  if (status >= 500) {
+  // MAINTENANCE (texniki işlər rejimi) gözlənilən cavabdır: jurnala xəta kimi yazılmır
+  const expected = code === 'MAINTENANCE';
+  if (status >= 500 && !expected) {
     console.error(`[error] ${req.method} ${req.originalUrl}`, err && err.stack ? err.stack : err);
   }
 
   if (res.headersSent) return next(err);
 
-  const message = status >= 500 && process.env.NODE_ENV === 'production'
+  const message = status >= 500 && !expected && process.env.NODE_ENV === 'production'
     ? 'Internal server error'
     : e.message;
   res.status(status).json({
