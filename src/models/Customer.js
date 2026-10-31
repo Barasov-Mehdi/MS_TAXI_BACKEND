@@ -21,6 +21,8 @@ const customerSchema = new mongoose.Schema(
     appPlatform: { type: String, enum: ['android', 'ios', null], default: null },
     // "Yeniliklər" bölməsinə son baxış vaxtı (oxunmamış sayı bundan sonrakı elanlardır)
     newsSeenAt: { type: Date, default: null },
+    // Müştəri hesabını özü silib (customerAccount.service): şəxsi məlumatlar təmizlənib, hesab bağlıdır
+    deletedAt: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );

@@ -16,6 +16,7 @@ const promoService = require('../services/promo.service');
 const cityService = require('../services/city.service');
 const customerSupport = require('../services/customerSupport.service');
 const newsService = require('../services/news.service');
+const customerAccount = require('../services/customerAccount.service');
 
 function validated(schema) {
   return (req, res, next) => {
@@ -50,6 +51,25 @@ router.get('/me', async (req, res, next) => {
     });
   } catch (e) { next(e); }
 });
+
+// ---------------------------------------------------------------- Hesabın silinməsi
+// POST /customers/me/delete { reason? } → { deleted: true }
+// Aktiv sifariş varsa 409 ACTIVE_ORDER. Uğurlu olanda bütün sessiyalar ləğv olunur (tətbiq çıxış edir).
+router.post(
+  '/me/delete',
+  validated(Joi.object({ reason: Joi.string().trim().allow('').max(300) })),
+  async (req, res, next) => {
+    try {
+      const result = await customerAccount.deleteCustomerAccount({
+        user: req.user,
+        customer: req.customer,
+        reason: req.body.reason || '',
+        ip: req.ip,
+      });
+      ok(res, result);
+    } catch (e) { next(e); }
+  }
+);
 
 // ---------------------------------------------------------------- Yeniliklər (admin elanları)
 // GET  /customers/news?before=<ISO>&limit=30 → { news: [...], hasMore, unread }
