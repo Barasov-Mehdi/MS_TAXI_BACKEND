@@ -25,6 +25,7 @@ const L = {
   az: {
     title: 'Səfər qəbzi', order: 'Sifariş', date: 'Tarix', route: 'Marşrut', from: 'Haradan', to: 'Haraya', stop: 'Dayanacaq',
     trip: 'Səfər', distance: 'Məsafə', duration: 'Müddət', class: 'Sinif', payment: 'Ödəniş',
+    rounding: 'Yuvarlaqlaşdırma', minFare: 'Minimum gediş haqqı', tariffAdj: 'Tarif düzəlişi', surgeX: 'Yüksək tələbat', stoppedAdj: 'Yolda dayandırıldı',
     fare: 'Qiymət', base: 'Başlanğıc', distFare: 'Məsafə', timeFare: 'Vaxt', stopFare: 'Dayanacaqlar', waiting: 'Gözləmə',
     discount: 'Endirim', total: 'Cəmi', driver: 'Sürücü', name: 'Ad, soyad', car: 'Avtomobil', plate: 'Nömrə',
     stopped: 'Səfər yolda dayandırılıb — gedilən məsafəyə görə hesablanıb', thanks: 'Səfəriniz üçün təşəkkür edirik!',
@@ -35,6 +36,7 @@ const L = {
   en: {
     title: 'Trip receipt', order: 'Order', date: 'Date', route: 'Route', from: 'From', to: 'To', stop: 'Stop',
     trip: 'Trip', distance: 'Distance', duration: 'Duration', class: 'Class', payment: 'Payment',
+    rounding: 'Rounding', minFare: 'Minimum fare', tariffAdj: 'Fare adjustment', surgeX: 'High demand', stoppedAdj: 'Stopped on the way',
     fare: 'Fare', base: 'Base fare', distFare: 'Distance', timeFare: 'Time', stopFare: 'Stops', waiting: 'Waiting',
     discount: 'Discount', total: 'Total', driver: 'Driver', name: 'Name', car: 'Car', plate: 'Plate',
     stopped: 'Trip was stopped on the way — charged for the distance travelled', thanks: 'Thank you for riding with us!',
@@ -45,6 +47,7 @@ const L = {
   ru: {
     title: 'Чек поездки', order: 'Заказ', date: 'Дата', route: 'Маршрут', from: 'Откуда', to: 'Куда', stop: 'Остановка',
     trip: 'Поездка', distance: 'Расстояние', duration: 'Время', class: 'Класс', payment: 'Оплата',
+    rounding: 'Округление', minFare: 'Минимальная стоимость', tariffAdj: 'Корректировка тарифа', surgeX: 'Повышенный спрос', stoppedAdj: 'Остановлено в пути',
     fare: 'Стоимость', base: 'Посадка', distFare: 'Расстояние', timeFare: 'Время', stopFare: 'Остановки', waiting: 'Ожидание',
     discount: 'Скидка', total: 'Итого', driver: 'Водитель', name: 'Имя', car: 'Автомобиль', plate: 'Номер',
     stopped: 'Поездка остановлена в пути — оплата за пройденное расстояние', thanks: 'Спасибо за поездку!',
@@ -55,6 +58,7 @@ const L = {
   tr: {
     title: 'Yolculuk fişi', order: 'Sipariş', date: 'Tarih', route: 'Güzergâh', from: 'Nereden', to: 'Nereye', stop: 'Durak',
     trip: 'Yolculuk', distance: 'Mesafe', duration: 'Süre', class: 'Sınıf', payment: 'Ödeme',
+    rounding: 'Yuvarlama', minFare: 'Minimum ücret', tariffAdj: 'Tarife düzeltmesi', surgeX: 'Yüksek talep', stoppedAdj: 'Yolda durduruldu',
     fare: 'Ücret', base: 'Açılış', distFare: 'Mesafe', timeFare: 'Süre', stopFare: 'Duraklar', waiting: 'Bekleme',
     discount: 'İndirim', total: 'Toplam', driver: 'Sürücü', name: 'Ad soyad', car: 'Araç', plate: 'Plaka',
     stopped: 'Yolculuk yolda durduruldu — gidilen mesafeye göre ücretlendirildi', thanks: 'Yolculuğunuz için teşekkür ederiz!',
@@ -63,6 +67,44 @@ const L = {
     payments: { CASH: 'Nakit', CARD: 'Kart', WALLET: 'Cüzdan' },
   },
 };
+
+/**
+ * Qiymət tərkibi: sətirlərin cəmi = yekun məbləğ (müştəri tətbiqindəki utils/fare.js ilə eyni məntiq).
+ * Fərq (yuvarlaqlaşdırma, minimum haqq, tələbat əmsalı, yolda dayandırma) ayrıca sətirdir.
+ */
+function fareBreakdown(o) {
+  const snap = o.pricingSnapshot || {};
+  const stopped = !!(o.stoppedEarly && o.stoppedEarly.at);
+  const total = stopped && o.stoppedEarly.chargedMinor != null ? Number(o.stoppedEarly.chargedMinor) : Number(snap.finalPriceMinor);
+  if (!Number.isFinite(total)) return { lines: [], total: null };
+  const planned = stopped
+    ? Number(o.stoppedEarly.originalPriceMinor ?? snap.originalFinalPriceMinor ?? snap.finalPriceMinor)
+    : Number(snap.finalPriceMinor);
+  const parts = [
+    ['base', snap.baseFareMinor],
+    ['distFare', snap.distanceFareMinor],
+    ['timeFare', snap.timeFareMinor],
+    ['stopFare', snap.stopFareMinor],
+    ['waiting', snap.waitingFareMinor],
+  ].map(([key, v]) => ({ key, amount: Math.round(Number(v) || 0), part: true })).filter((p) => p.amount > 0);
+  const discount = Math.max(0, Math.round(Number(snap.discountMinor) || 0));
+  const lines = [...parts];
+  if (parts.length) {
+    const sum = parts.reduce((a, p) => a + p.amount, 0);
+    const adjust = (Number.isFinite(planned) ? planned : total) + discount - sum;
+    if (adjust !== 0) {
+      const surge = Number(snap.surgeMultiplier) || 1;
+      let key = 'tariffAdj';
+      if (Math.abs(adjust) <= 5) key = 'rounding';
+      else if (surge > 1 && adjust > 0) key = 'surgeX';
+      else if (adjust > 0) key = 'minFare';
+      lines.push({ key, amount: adjust, surge });
+    }
+  }
+  if (discount > 0) lines.push({ key: 'discount', amount: -discount, good: true });
+  if (stopped && Number.isFinite(planned) && total !== planned) lines.push({ key: 'stoppedAdj', amount: total - planned, warn: true });
+  return { lines: parts.length || discount || stopped ? lines : [], total };
+}
 
 const RECEIPT_STATUSES = [OrderStatus.TRIP_COMPLETED, OrderStatus.RATING_PENDING, OrderStatus.COMPLETED].filter(Boolean);
 
@@ -110,7 +152,6 @@ function buildReceiptPdf({ order, driver, lang = 'az' }) {
   const stops = Array.isArray(o.stops) ? o.stops : [];
   const dest = stops.length ? stops[stops.length - 1] : null;
   const addr = (s) => (s && (s.address || s.label)) || '';
-  const total = o.stoppedEarly && o.stoppedEarly.chargedMinor != null ? o.stoppedEarly.chargedMinor : snap.finalPriceMinor;
 
   const W = 360; // dar "çek" formatı (pt)
   const PAGE_H = 1100;
@@ -190,17 +231,14 @@ function buildReceiptPdf({ order, driver, lang = 'az' }) {
 
     // ---- Qiymətin tərkibi
     section(t.fare);
-    const parts = [
-      [t.base, snap.baseFareMinor],
-      [t.distFare, snap.distanceFareMinor],
-      [t.timeFare, snap.timeFareMinor],
-      [t.stopFare, snap.stopFareMinor],
-      [t.waiting, snap.waitingFareMinor],
-    ].filter(([, v]) => Number(v) > 0);
-    parts.forEach(([label, v]) => row(label, money(v)));
-    if (Number(snap.discountMinor) > 0) {
-      row(o.promoCode ? `${t.discount} (${o.promoCode})` : t.discount, `−${money(snap.discountMinor)}`, { color: BRAND });
-    }
+    const fare = fareBreakdown(o);
+    fare.lines.forEach((line) => {
+      let label = t[line.key] || line.key;
+      if (line.key === 'surgeX') label = `${t.surgeX} (×${String(line.surge).replace('.', ',')})`;
+      if (line.key === 'discount' && o.promoCode) label = `${t.discount} (${o.promoCode})`;
+      const value = line.part ? money(line.amount) : `${line.amount < 0 ? '−' : '+'}${money(Math.abs(line.amount))}`;
+      row(label, value, { color: line.good ? BRAND : line.warn ? '#B45309' : line.key === 'rounding' ? MUTED : undefined });
+    });
     if (o.stoppedEarly && o.stoppedEarly.at) {
       doc.font('R').fontSize(8.5).fill('#B45309').text(t.stopped, M, y, { width: IW });
       y += doc.heightOfString(t.stopped, { width: IW }) + 6;
@@ -210,7 +248,7 @@ function buildReceiptPdf({ order, driver, lang = 'az' }) {
     y += 4;
     doc.roundedRect(M, y, IW, 44, 10).fill(SOFT);
     doc.font('B').fontSize(12).fill(TEXT).text(t.total, M + 14, y + 14, { width: IW / 2 });
-    doc.font('B').fontSize(18).fill(BRAND).text(money(total), M + IW / 2, y + 10, { width: IW / 2 - 14, align: 'right' });
+    doc.font('B').fontSize(18).fill(BRAND).text(money(fare.total), M + IW / 2, y + 10, { width: IW / 2 - 14, align: 'right' });
     y += 56;
 
     // ---- Sürücü
@@ -259,4 +297,4 @@ function receiptFileName(order) {
   return `Baras-qebz-${shortId(order)}`;
 }
 
-module.exports = { buildReceiptPdf, canHaveReceipt, receiptFileName, loadReceiptDriver, formatPlate, L };
+module.exports = { fareBreakdown, buildReceiptPdf, canHaveReceipt, receiptFileName, loadReceiptDriver, formatPlate, L };
