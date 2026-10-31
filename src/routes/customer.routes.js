@@ -34,6 +34,7 @@ function validated(schema) {
 
 const COMPLAINT_CATEGORIES = ['DRIVER_BEHAVIOR', 'VEHICLE_PROBLEM', 'PAYMENT', 'WRONG_ROUTE', 'SAFETY', 'OTHER'];
 const CUSTOMER_LANGUAGES = ['az', 'ru', 'en', 'tr'];
+const AVATAR_KEY_RE = /^[a-z][a-z0-9]{0,11}$/;
 
 router.use(authenticate, requireRoles('CUSTOMER'));
 
@@ -57,10 +58,16 @@ router.get('/me', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ---------------------------------------------------------------- Hesabın silinməsi
-// POST /customers/me/avatar (multipart, sahə "file") → { user }  — profil şəklini qoy / dəyiş
-router.post('/me/avatar', (req, res, next) =>
-  avatarUpload(req, res, async (err) => {
+// ---------------------------------------------------------------- Profil şəkli
+// Müştərilər tətbiqdəki hazır cizgi avatarlardan seçir: PATCH /customers/me { avatarKey } (bazada yalnız açar).
+//
+// POST /customers/me/avatar (multipart, sahə "file") → { user }  — REAL şəkil yükləmə.
+// Hələlik BAĞLIDIR (MongoDB yaddaşına qənaət): yalnız AVATAR_UPLOAD_ENABLED=true olanda işləyir.
+const uploadEnabled = () => String(process.env.AVATAR_UPLOAD_ENABLED || '').toLowerCase() === 'true';
+
+router.post('/me/avatar', (req, res, next) => {
+  if (!uploadEnabled()) return next(new AppError('FEATURE_DISABLED', 'Şəkil yükləmə hələlik bağlıdır', 403));
+  return avatarUpload(req, res, async (err) => {
     try {
       if (err) {
         if (err.code === 'LIMIT_FILE_SIZE') throw new AppError('FILE_TOO_LARGE', 'Şəkil ən çox 3 MB ola bilər', 413);
@@ -69,9 +76,10 @@ router.post('/me/avatar', (req, res, next) =>
       await avatarService.setForUser(req.user, req.file, req);
       ok(res, { user: authService.publicUser(req.user) }, {}, 201);
     } catch (e) { next(e); }
-  }));
+  });
+});
 
-// DELETE /customers/me/avatar → { user }  — profil şəklini sil
+// DELETE /customers/me/avatar → { user }  — yüklənmiş real şəkli sil (köhnə şəkillər üçün də işləyir)
 router.delete('/me/avatar', async (req, res, next) => {
   try {
     await avatarService.clearForUser(req.user);
@@ -79,6 +87,7 @@ router.delete('/me/avatar', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---------------------------------------------------------------- Hesabın silinməsi
 // POST /customers/me/delete { reason? } → { deleted: true }
 // Aktiv sifariş varsa 409 ACTIVE_ORDER. Uğurlu olanda bütün sessiyalar ləğv olunur (tətbiq çıxış edir).
 router.post(
@@ -155,13 +164,20 @@ router.post('/support/read', async (req, res, next) => {
 // Ad, soyad, istifadəçi adı və email sonradan əlavə oluna bilər. İstifadəçi adı boş qala bilməz.
 router.patch('/me', async (req, res, next) => {
   try {
-    const { firstName, lastName, username, email, language } = req.body;
+    const { firstName, lastName, username, email, language, avatarKey } = req.body;
     const user = req.user;
 
     // Tətbiqin dili (push bildirişləri üçün). Yanlış dəyər səssizcə nəzərə alınmır.
     if (language !== undefined && CUSTOMER_LANGUAGES.includes(String(language))) {
       req.customer.language = String(language);
       await req.customer.save();
+    }
+
+    // Hazır cizgi avatar (tətbiqdəki şəkil açarı). null / '' → avatar silinir
+    if (avatarKey !== undefined) {
+      const key = String(avatarKey || '').trim().toLowerCase();
+      if (key && !AVATAR_KEY_RE.test(key)) throw new AppError('VALIDATION_ERROR', 'Avatar düzgün deyil', 400);
+      user.avatarKey = key || null;
     }
 
     if (firstName != null) user.firstName = String(firstName).trim().slice(0, 50);

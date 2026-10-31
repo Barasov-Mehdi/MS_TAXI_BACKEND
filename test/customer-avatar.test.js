@@ -1,5 +1,7 @@
 /**
  * Müştəri profil şəkli:
+ *  PATCH  /customers/me { avatarKey }  → tətbiqdəki hazır cizgi avatar (bazada yalnız açar)
+ *  AVATAR_UPLOAD_ENABLED=true deyilsə real şəkil yükləmə bağlıdır (403 FEATURE_DISABLED)
  *  POST   /customers/me/avatar  (multipart "file") → GridFS-ə yazılır, User.avatarUrl yenilənir, köhnə fayl silinir
  *  DELETE /customers/me/avatar  → avatarUrl null, fayl silinir
  *  Şəkil olmayan fayl → 400 INVALID_FILE
@@ -57,6 +59,7 @@ const OLD_ID = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 
 beforeEach(() => {
   process.env.PUBLIC_API_URL = 'https://api.example.com';
+  process.env.AVATAR_UPLOAD_ENABLED = 'true';
   mockBucket.uploads = [];
   mockBucket.deleted = [];
   mockUserDoc = {
@@ -107,4 +110,29 @@ test('şəkil silinir', async () => {
   expect(mockUserDoc.avatarUrl).toBeNull();
   expect(res.body.data.user.avatarUrl).toBeNull();
   expect(mockBucket.deleted).toEqual([OLD_ID]);
+});
+
+test('real şəkil yükləmə bayraq olmadan bağlıdır', async () => {
+  delete process.env.AVATAR_UPLOAD_ENABLED;
+  const res = await request(app).post('/customers/me/avatar').attach('file', PNG, { filename: 'a.png', contentType: 'image/png' });
+  expect(res.status).toBe(403);
+  expect(JSON.stringify(res.body)).toContain('FEATURE_DISABLED');
+  expect(mockBucket.uploads).toHaveLength(0);
+});
+
+test('hazır avatar seçilir və silinir (PATCH /me avatarKey)', async () => {
+  let res = await request(app).patch('/customers/me').send({ avatarKey: 'W3' });
+  expect(res.status).toBe(200);
+  expect(mockUserDoc.avatarKey).toBe('w3');
+  expect(res.body.data.user.avatarKey).toBe('w3');
+
+  res = await request(app).patch('/customers/me').send({ avatarKey: null });
+  expect(res.status).toBe(200);
+  expect(mockUserDoc.avatarKey).toBeNull();
+});
+
+test('yanlış avatar açarı rədd edilir', async () => {
+  const res = await request(app).patch('/customers/me').send({ avatarKey: '../x' });
+  expect(res.status).toBe(400);
+  expect(mockUserDoc.save).not.toHaveBeenCalled();
 });

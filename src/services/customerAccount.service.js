@@ -56,6 +56,7 @@ async function deleteCustomerAccount({ user, customer, reason = '', ip = null })
     u.usernameLower = undefined;
     await avatarService.removeByUrl(u.avatarUrl).catch(() => {});
     u.avatarUrl = null;
+    u.avatarKey = null;
     u.phoneVerifyCode = null;
     u.phoneVerifyExpiresAt = null;
     u.activeSessionId = null;

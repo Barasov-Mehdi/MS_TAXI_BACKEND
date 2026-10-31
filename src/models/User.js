@@ -17,6 +17,8 @@ const userSchema = new mongoose.Schema(
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
     avatarUrl: { type: String, default: null },
+    // Tətbiq daxilindəki hazır cizgi avatarın açarı (məs. "m3", "w5"): şəkil tətbiqdədir, bazada yalnız açar saxlanır
+    avatarKey: { type: String, default: null },
     isActive: { type: Boolean, default: true, index: true },
     // Yalnız ADMIN üçün: null → baş admin (bütün şəhərlər); dolu → regional admin (yalnız bu şəhər).
     // Silinmiş hesab: nömrə azad edilir (yenidən qeydiyyat mümkün olsun), əsli burada saxlanır
