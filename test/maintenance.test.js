@@ -11,11 +11,19 @@ jest.mock('../src/services/settings.service', () => ({
   getSettings: jest.fn(async () => ({ maintenanceEnabled: false, maintenanceMessage: '', maintenanceUntil: null, ...mockStore })),
   setSetting: jest.fn(async (k, v) => { mockStore[k] = v; }),
 }));
+const mockPushes = [];
 jest.mock('../src/websocket/emitter', () => ({
   toCustomers: (event, payload) => mockEmits.push({ to: 'customers', event, payload }),
+  toDrivers: (city, event, payload) => mockEmits.push({ to: 'drivers', city, event, payload }),
   toAdminsFor: (city, event, payload) => mockEmits.push({ to: 'admin', event, payload }),
 }));
 jest.mock('../src/services/appVersion.service', () => ({}));
+jest.mock('../src/models', () => ({
+  Driver: { find: () => ({ select: () => ({ lean: async () => [{ _id: 'd1' }, { _id: 'd2' }] }) }) },
+}));
+jest.mock('../src/services/push.service', () => ({
+  sendNotification: jest.fn(async (id, n) => { mockPushes.push({ id, ...n }); return true; }),
+}));
 jest.mock('../src/services/newsImage.service', () => ({ stream: jest.fn() }));
 jest.mock('../src/services/avatar.service', () => ({ stream: jest.fn() }));
 
@@ -33,7 +41,10 @@ app.use(errorHandler);
 beforeEach(() => {
   Object.keys(mockStore).forEach((k) => delete mockStore[k]);
   mockEmits.length = 0;
+  mockPushes.length = 0;
 });
+
+const flush = () => new Promise((r) => setImmediate(r));
 
 test('rejim bağlıdır: status false, sifariş keçir', async () => {
   const s = await request(app).get('/app/status');
@@ -70,4 +81,28 @@ test('söndürəndə mətn və vaxt təmizlənir', async () => {
 test('yanlış vaxt null olur', async () => {
   const r = await maintenance.setStatus({ enabled: true, until: 'sabah' });
   expect(r.until).toBeNull();
+});
+
+test('sürücülərə socket yayımı və yalnız rejim dəyişəndə push', async () => {
+  await maintenance.setStatus({ enabled: true, message: 'Yeniləmə' });
+  await flush();
+  const drv = mockEmits.find((e) => e.to === 'drivers' && e.event === 'maintenance_changed');
+  expect(drv.city).toBeNull();
+  expect(drv.payload.enabled).toBe(true);
+  expect(mockPushes.map((p) => p.id)).toEqual(['d1', 'd2']);
+  expect(mockPushes[0].type).toBe('maintenance');
+  expect(mockPushes[0].body).toContain('Yeniləmə');
+
+  // Yalnız mətn dəyişir: push təkrarlanmır, socket yayımı isə gedir
+  mockPushes.length = 0;
+  await maintenance.setStatus({ message: 'Yeni mətn' });
+  await flush();
+  expect(mockPushes).toHaveLength(0);
+  expect(mockEmits.filter((e) => e.to === 'drivers').length).toBe(2);
+
+  // Söndürüləndə "yenidən işləyir" push-u
+  await maintenance.setStatus({ enabled: false });
+  await flush();
+  expect(mockPushes).toHaveLength(2);
+  expect(mockPushes[0].title).toBe('Sistem yenidən işləyir');
 });

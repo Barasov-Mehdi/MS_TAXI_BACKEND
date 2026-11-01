@@ -19,6 +19,7 @@ const supportService = require('../services/support.service');
 const documentService = require('../services/document.service');
 const newsService = require('../services/news.service');
 const appVersion = require('../services/appVersion.service');
+const maintenance = require('../services/maintenance.service');
 const realtime = require('../websocket/emitter');
 const adminFeed = require('../websocket/adminFeed');
 const multer = require('multer');
@@ -114,6 +115,8 @@ router.get('/me', async (req, res, next) => {
       // "Yeniliklər" bölməsində oxunmamış elan sayı
       newsUnread: await newsService.unreadForDriver(req.driver),
       documents: (await documentService.listForDriver(req.driver._id)).summary,
+      // Texniki işlər rejimi: tətbiq 5 san-lik sinxronizasiyada da görür (socket hadisəsi itsə belə)
+      maintenance: await maintenance.getStatus().catch(() => ({ enabled: false, message: '', until: null })),
     });
   } catch (e) { next(e); }
 });
