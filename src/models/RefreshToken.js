@@ -12,5 +12,8 @@ module.exports = mongoose.model(
     // Rotasiya vaxtı (yenisi verilib). Qısa güzəşt müddətində köhnə token bir daha qəbul olunur:
     // cavab şəbəkədə itəndə / tətbiq yarımçıq bağlananda sürücü səbəbsiz çıxış etməsin.
     rotatedAt: { type: Date, default: null },
+    // Rotasiyada bunun yerinə verilən tokenin hash-i. Yeni token heç istifadə olunmayıbsa (cavab telefona çatmayıb),
+    // köhnə token yenidən qəbul olunur — sürücü səbəbsiz çıxış etmir.
+    replacedBy: { type: String, default: null },
   }, { timestamps: true })
 );

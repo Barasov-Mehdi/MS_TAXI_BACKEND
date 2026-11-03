@@ -14,8 +14,10 @@ jest.mock('../src/models', () => {
   const bcrypt = require('bcryptjs');
   const match = (doc, q) => Object.entries(q).every(([k, v]) => {
     if (v && typeof v === 'object' && '$ne' in v) return doc[k] !== v.$ne;
+    if (v && typeof v === 'object' && '$gt' in v) return doc[k] > v.$gt;
     return String(doc[k]) === String(v);
   });
+  const apply = (doc, upd) => Object.assign(doc, upd && upd.$set ? upd.$set : upd);
   const query = (val) => {
     const q = Promise.resolve(val);
     q.select = () => q;
@@ -43,8 +45,13 @@ jest.mock('../src/models', () => {
     },
     findOneAndUpdate: async (q, upd) => {
       const r = mockDb.refresh.find((x) => match(x, q));
-      if (r) Object.assign(r, upd);
+      if (r) apply(r, upd);
       return r || null;
+    },
+    updateOne: async (q, upd) => {
+      const r = mockDb.refresh.find((x) => match(x, q));
+      if (r) apply(r, upd);
+      return { matchedCount: r ? 1 : 0 };
     },
   };
   const Driver = {
@@ -112,16 +119,38 @@ test('köhnə cihazın refresh tokeni SESSION_REPLACED, yeni cihazınkı işləy
   expect((await run(r.accessToken)).err).toBeUndefined();
 });
 
-test('rotasiyadan sonra köhnə refresh tokeni 60 san ərzində qəbul olunur (cavab itibsə çıxış olmasın), sonra yox', async () => {
+test('rotasiyadan sonra köhnə refresh tokeni 60 san ərzində qəbul olunur (cavab itibsə çıxış olmasın)', async () => {
   const a = await authService.login({ phone: '+994501112233', password: 'secret1' });
   const r1 = await authService.refresh(a.refreshToken);
   // Cavab itdi, tətbiq köhnə tokenlə təkrar sorğu göndərir
   const r2 = await authService.refresh(a.refreshToken);
   expect((await run(r2.accessToken)).err).toBeUndefined();
   expect((await run(r1.accessToken)).err).toBeUndefined();
-  // Güzəşt bitdi
-  const row = mockDb.refresh.find((x) => x.rotatedAt);
-  row.rotatedAt = new Date(Date.now() - 61 * 1000);
+});
+
+const hashOf = (raw) => require('crypto').createHash('sha256').update(raw).digest('hex');
+const rowOf = (raw) => mockDb.refresh.find((x) => x.tokenHash === hashOf(raw));
+
+test('güzəşt bitəndən sonra: yeni token HEÇ istifadə olunmayıbsa (cavab telefona çatmayıb) köhnə token qəbul olunur', async () => {
+  const a = await authService.login({ phone: '+994501112233', password: 'secret1' });
+  const lost = await authService.refresh(a.refreshToken); // bu cavab telefona çatmadı
+  rowOf(a.refreshToken).rotatedAt = new Date(Date.now() - 10 * 60 * 1000);
+  const r = await authService.refresh(a.refreshToken);
+  expect((await run(r.accessToken)).err).toBeUndefined();
+  // İtmiş token artıq keçmir (zəncirdə yalnız bir aktiv token qalır)
+  rowOf(lost.refreshToken).rotatedAt = new Date(Date.now() - 10 * 60 * 1000);
+  rowOf(lost.refreshToken).replacedBy = null;
+  await expect(authService.refresh(lost.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
+  // Yeni token normal işləyir
+  const r2 = await authService.refresh(r.refreshToken);
+  expect((await run(r2.accessToken)).err).toBeUndefined();
+});
+
+test('güzəşt bitəndən sonra: yeni token artıq istifadə olunubsa köhnə token rədd edilir', async () => {
+  const a = await authService.login({ phone: '+994501112233', password: 'secret1' });
+  const r1 = await authService.refresh(a.refreshToken);
+  await authService.refresh(r1.refreshToken); // yeni token istifadə olundu
+  rowOf(a.refreshToken).rotatedAt = new Date(Date.now() - 61 * 1000);
   await expect(authService.refresh(a.refreshToken)).rejects.toMatchObject({ code: 'INVALID_REFRESH' });
 });
 

@@ -41,6 +41,11 @@ function hashToken(token) {
 }
 
 async function issueRefresh(user) {
+  return (await issueRefreshRow(user)).raw;
+}
+
+/** Yeni refresh token yaradır; həm xam dəyəri, həm də hash-i qaytarır (rotasiya zənciri üçün). */
+async function issueRefreshRow(user) {
   const raw = crypto.randomBytes(48).toString('hex');
   const ttlMs = 30 * 24 * 3600 * 1000;
   await RefreshToken.create({
@@ -49,7 +54,7 @@ async function issueRefresh(user) {
     expiresAt: new Date(Date.now() + ttlMs),
     sessionId: singleSessionFor(user) ? user.activeSessionId || null : null,
   });
-  return raw;
+  return { raw, hash: hashToken(raw) };
 }
 
 /**
@@ -220,17 +225,34 @@ async function refresh(refreshToken) {
   }
   if (row.expiresAt < new Date()) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
   if (row.revoked) {
-    // Yalnız rotasiya ilə ləğv olunmuş token, qısa güzəşt müddətində (cavab itibsə təkrar sorğu)
-    const grace = row.rotatedAt && Date.now() - new Date(row.rotatedAt).getTime() < REFRESH_GRACE_MS;
-    if (!grace) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
-  } else {
-    row.revoked = true;
-    row.rotatedAt = new Date();
-    await row.save();
+    // Yalnız ROTASIYA ilə ləğv olunmuş token qəbul oluna bilər (çıxış / yeni giriş / parol dəyişmə → rotatedAt=null).
+    if (!row.rotatedAt) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
+    // 1) Qısa güzəşt müddəti: paralel / təkrar sorğu
+    let allowed = Date.now() - new Date(row.rotatedAt).getTime() < REFRESH_GRACE_MS;
+    // 2) Cavab itib: server yeni token verib, amma telefon onu heç vaxt almayıb (şəbəkə kəsildi, tətbiq arxa plana
+    //    keçdi və s.). Yeni token HEÇ istifadə olunmayıbsa, köhnə token hələ də bu cihazındır — sürücü səbəbsiz
+    //    çıxış etməsin. (Əvvəl 60 san-dən sonra sürücü "Sessiya bitib" görüb çıxırdı.)
+    if (!allowed && row.replacedBy) {
+      const next = await RefreshToken.findOneAndUpdate(
+        { tokenHash: row.replacedBy, revoked: false, expiresAt: { $gt: new Date() } },
+        { $set: { revoked: true, rotatedAt: new Date() } },
+        { new: true }
+      );
+      allowed = !!next;
+    }
+    if (!allowed) throw new AppError('INVALID_REFRESH', 'Invalid refresh token', 401);
+    const issued = await issueRefreshRow(user);
+    await RefreshToken.updateOne({ _id: row._id }, { $set: { replacedBy: issued.hash } }).catch(() => {});
+    return { accessToken: signAccess(user), refreshToken: issued.raw };
   }
+  row.revoked = true;
+  row.rotatedAt = new Date();
+  const issued = await issueRefreshRow(user);
+  row.replacedBy = issued.hash;
+  await row.save();
   return {
     accessToken: signAccess(user),
-    refreshToken: await issueRefresh(user),
+    refreshToken: issued.raw,
   };
 }
 
