@@ -1328,4 +1328,7 @@ router.put(
 // Əlavə bölmələr: sənədlər, namizəd sürücülər, sərnişinlər, canlı xəritə, hesabatlar, jurnal
 router.use(require('./admin.extra.routes'));
 
+// Tam silmə (yalnız baş admin): /drivers/:id/purge, /customers/:id/purge
+router.use(require('./admin.purge.routes'));
+
 module.exports = router;

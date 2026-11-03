@@ -11,5 +11,10 @@ const schema = new mongoose.Schema({
 }, { timestamps: true });
 
 schema.index({ orderId: 1, clientMessageId: 1 }, { unique: true });
+// Çat tarixçəsi: sifarişin mesajları vaxt sırası ilə (listMessages) — sıralama indeksdən oxunur
+schema.index({ orderId: 1, createdAt: 1 });
+// Tam silmə: istifadəçinin göndərdiyi / aldığı mesajlar
+schema.index({ senderId: 1 });
+schema.index({ receiverId: 1 });
 
 module.exports = mongoose.model('Message', schema);
