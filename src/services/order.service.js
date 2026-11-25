@@ -567,8 +567,15 @@ async function completeTrip({ orderId, driver, user, early = null }) {
     await session.commitTransaction();
 
     announceQueuedActivated(driver._id, activated);
-    realtime.toOrder(order._id, 'trip_completed', { orderId: order._id });
-    realtime.toCustomer(order.customerId, 'trip_completed', { orderId: order._id });
+    // Status və yekun qiymət hadisənin içindədir: müştəri tətbiqi əlavə sorğu gözləmədən dərhal yenilənir
+    const donePayload = {
+      orderId: order._id,
+      status: order.status,
+      finalPriceMinor: (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0,
+      completedAt: order.completedAt,
+    };
+    realtime.toOrder(order._id, 'trip_completed', donePayload);
+    realtime.toCustomer(order.customerId, 'trip_completed', donePayload);
     realtime.toDriver(driver._id, 'balance_updated', { balanceMinor: drv.walletBalanceMinor });
     return order;
   } catch (e) {
