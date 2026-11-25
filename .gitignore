@@ -7,3 +7,11 @@ coverage/
 *.zip
 
 /firebase-service-account.json
+
+# Sensitive credentials
+HEROKU VARS.txt
+.env
+.env.*
+!.env.example
+*service-account*.json
+firebase-service-account.json
