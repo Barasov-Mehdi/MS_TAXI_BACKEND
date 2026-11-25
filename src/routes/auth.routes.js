@@ -7,6 +7,7 @@ const { User } = require('../models');
 const { AppError } = require('../utils/errors');
 const rateLimit = require('express-rate-limit');
 const otpService = require('../services/otp.service');
+const { makeStore } = require('../utils/rateLimitStore');
 const { normalizePhone } = require('../utils/validators');
 
 function validate(schema) {
@@ -28,15 +29,15 @@ const limiterOpts = (max) => ({
   handler: (req, res, next) =>
     next(new AppError('TOO_MANY_REQUESTS', 'Çox sorğu göndərildi, bir az sonra yenidən cəhd edin', 429)),
 });
-const otpRequestLimiter = rateLimit(limiterOpts(10));
-const otpVerifyLimiter = rateLimit(limiterOpts(30));
+const otpRequestLimiter = rateLimit({ ...limiterOpts(10), store: makeStore('otpRequestLimiter'), passOnStoreError: true });
+const otpVerifyLimiter = rateLimit({ ...limiterOpts(30), store: makeStore('otpVerifyLimiter'), passOnStoreError: true });
 // Parol endpoint-ləri: IP üzrə + nömrə üzrə ayrıca limit (brute-force / SMS spam).
 const phoneKey = (req) => `ph:${String((req.body && req.body.phone) || '').replace(/\D/g, '').slice(-9)}`;
-const loginIpLimiter = rateLimit({ ...limiterOpts(60), skipSuccessfulRequests: true });
-const loginPhoneLimiter = rateLimit({ ...limiterOpts(10), skipSuccessfulRequests: true, keyGenerator: phoneKey });
-const registerLimiter = rateLimit({ ...limiterOpts(10), windowMs: 60 * 60 * 1000 });
-const resetIpLimiter = rateLimit(limiterOpts(20));
-const resetPhoneLimiter = rateLimit({ ...limiterOpts(10), keyGenerator: phoneKey });
+const loginIpLimiter = rateLimit({ ...limiterOpts(60), skipSuccessfulRequests: true, store: makeStore('loginIpLimiter'), passOnStoreError: true });
+const loginPhoneLimiter = rateLimit({ ...limiterOpts(10), skipSuccessfulRequests: true, keyGenerator: phoneKey, store: makeStore('loginPhoneLimiter'), passOnStoreError: true });
+const registerLimiter = rateLimit({ ...limiterOpts(10), windowMs: 60 * 60 * 1000, store: makeStore('registerLimiter'), passOnStoreError: true });
+const resetIpLimiter = rateLimit({ ...limiterOpts(20), store: makeStore('resetIpLimiter'), passOnStoreError: true });
+const resetPhoneLimiter = rateLimit({ ...limiterOpts(10), keyGenerator: phoneKey, store: makeStore('resetPhoneLimiter'), passOnStoreError: true });
 
 const phoneField = Joi.string().required().custom((v, helpers) => {
   const n = normalizePhone(v);

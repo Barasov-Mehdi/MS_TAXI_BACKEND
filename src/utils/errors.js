@@ -38,6 +38,8 @@ function errorHandler(err, req, res, next) {
   const expected = code === 'MAINTENANCE';
   if (status >= 500 && !expected) {
     console.error(`[error] ${req.method} ${req.originalUrl}`, err && err.stack ? err.stack : err);
+    // eslint-disable-next-line global-require
+    require('./monitoring').captureException(err, { method: req.method, url: req.originalUrl });
   }
 
   if (res.headersSent) return next(err);

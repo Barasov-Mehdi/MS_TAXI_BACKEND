@@ -38,5 +38,10 @@ const customerSchema = new mongoose.Schema(
 );
 
 customerSchema.index({ location: '2dsphere' });
+// FCM tokeni ilə axtarış (tətbiq hər açılanda eyni cihazın köhnə hesabdakı tokeni silinir): indekssiz bu sorğu
+// bütün müştəri kolleksiyasını tarayırdı. sparse: tokeni olmayan sənədlər indeksə düşmür.
+customerSchema.index({ fcmToken: 1 }, { sparse: true });
+// Kütləvi bildirişlər (yeniləmə / yeniliklər) üçün: tokeni olan müştərilər _id sırası ilə səhifələnir
+customerSchema.index({ appPlatform: 1, appVersionCode: 1 });
 
 module.exports = mongoose.model('Customer', customerSchema);

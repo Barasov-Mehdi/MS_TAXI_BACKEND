@@ -9,4 +9,8 @@ const schema = new mongoose.Schema({
   feeApplied: { type: Boolean, default: false },
 }, { timestamps: true });
 
+// Sürücünün rəyləri (profil, admin, statistika): indekssiz hər sorğu bütün rəyləri tarayırdı
+schema.index({ driverId: 1, createdAt: -1 });
+schema.index({ customerId: 1, createdAt: -1 });
+
 module.exports = mongoose.model('Rating', schema);

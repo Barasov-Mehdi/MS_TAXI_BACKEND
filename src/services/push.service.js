@@ -321,6 +321,22 @@ function customerAndroidNotification(type, tag) {
   };
 }
 
+/** Sərnişin üçün FCM mesajı (tək və kütləvi göndəriş üçün eyni format). */
+function buildCustomerMessage(token, { title, body, type, data = {}, tag, ttlMs = 30 * 60 * 1000, imageUrl }) {
+  const payload = { type: str(type) };
+  for (const [k, v] of Object.entries(data || {})) payload[k] = str(v);
+  return {
+    token,
+    notification: { title: clip(title, 80), body: clip(body, 180), ...(imageUrl ? { imageUrl: String(imageUrl) } : {}) },
+    data: payload,
+    android: {
+      priority: 'high',
+      ttl: Math.max(1000, ttlMs),
+      notification: customerAndroidNotification(type, tag),
+    },
+  };
+}
+
 // `channel` köhnə çağırışlarla uyğunluq üçün qəbul olunur; görünüş `type`-a görə seçilir.
 // eslint-disable-next-line no-unused-vars
 async function sendToCustomer(customerId, { title, body, type, channel = 'trip', data = {}, tag, ttlMs = 30 * 60 * 1000, imageUrl }) {
@@ -328,19 +344,8 @@ async function sendToCustomer(customerId, { title, body, type, channel = 'trip',
   if (!m || !customerId) return false;
   const customer = await Customer.findById(customerId).select('+fcmToken').lean();
   if (!customer || !customer.fcmToken) return false;
-  const payload = { type: str(type) };
-  for (const [k, v] of Object.entries(data)) payload[k] = str(v);
   try {
-    await sendVia('customer', m, {
-      token: customer.fcmToken,
-      notification: { title: clip(title, 80), body: clip(body, 180), ...(imageUrl ? { imageUrl: String(imageUrl) } : {}) },
-      data: payload,
-      android: {
-        priority: 'high',
-        ttl: Math.max(1000, ttlMs),
-        notification: customerAndroidNotification(type, tag),
-      },
-    });
+    await sendVia('customer', m, buildCustomerMessage(customer.fcmToken, { title, body, type, data, tag, ttlMs, imageUrl }));
     noteResult('customer');
     return true;
   } catch (e) {
@@ -353,6 +358,111 @@ async function sendToCustomer(customerId, { title, body, type, channel = 'trip',
     }
     return false;
   }
+}
+
+const BULK_SIZE = 500; // FCM sendEach: bir çağırışda ən çox 500 mesaj
+
+/**
+ * KÜTLƏVİ göndəriş (yeniliklər, yeniləmə bildirişi): 500-lük paketlərlə FCM sendEach.
+ * Əvvəl hər müştəri üçün ayrıca DB oxunuşu + ayrıca FCM sorğusu gedirdi (100 000 müştəri → 100 000 + 100 000).
+ * items: [{ customerId, token, title, body, type, data, tag, ttlMs, imageUrl }]
+ * Ölü tokenlər (tətbiq silinib) toplu təmizlənir. Başqa Firebase layihəsinin tokenləri ehtiyat açarla göndərilir.
+ * @returns {Promise<{sent:number, failed:number, removed:number}>}
+ */
+async function sendBulkToCustomers(items) {
+  const list = (items || []).filter((it) => it && it.token);
+  const m = init('customer');
+  if (!m || !list.length) return { sent: 0, failed: list.length, removed: 0 };
+  let sent = 0;
+  let failed = 0;
+  const dead = [];
+  for (let i = 0; i < list.length; i += BULK_SIZE) {
+    const chunk = list.slice(i, i + BULK_SIZE);
+    const messages = chunk.map((it) => buildCustomerMessage(it.token, it));
+    let res;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      res = await m.sendEach(messages);
+    } catch (e) {
+      failed += chunk.length;
+      noteResult('customer', e);
+      // eslint-disable-next-line no-continue
+      continue;
+    }
+    const mismatched = [];
+    res.responses.forEach((r, k) => {
+      if (r.success) {
+        sent += 1;
+        return;
+      }
+      const code = r.error && r.error.code ? String(r.error.code) : '';
+      if (isMismatch(r.error)) mismatched.push(k);
+      else {
+        failed += 1;
+        if (/not-registered|invalid-registration/.test(code)) dead.push(chunk[k]);
+      }
+    });
+    // Tətbiq bir Firebase layihəsindən digərinə köçürülürsə: köhnə layihənin tokenləri digər açarla
+    const other = init('driver');
+    if (mismatched.length && other && other !== m && state.driver.projectId !== state.customer.projectId) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const r2 = await other.sendEach(mismatched.map((k) => messages[k]));
+        r2.responses.forEach((r, j) => {
+          if (r.success) sent += 1;
+          else {
+            failed += 1;
+            const code = r.error && r.error.code ? String(r.error.code) : '';
+            if (/not-registered|invalid-registration/.test(code)) dead.push(chunk[mismatched[j]]);
+          }
+        });
+      } catch (_) {
+        failed += mismatched.length;
+      }
+    } else {
+      failed += mismatched.length;
+    }
+  }
+  if (sent) noteResult('customer');
+  if (dead.length) {
+    for (let i = 0; i < dead.length; i += 1000) {
+      const ops = dead.slice(i, i + 1000).map((d) => ({
+        updateOne: { filter: { _id: d.customerId, fcmToken: d.token }, update: { $set: { fcmToken: null } } },
+      }));
+      // eslint-disable-next-line no-await-in-loop
+      await Customer.bulkWrite(ops, { ordered: false }).catch((e) => console.error('[push] ölü tokenlər silinmədi', e && e.message));
+    }
+  }
+  return { sent, failed, removed: dead.length };
+}
+
+/**
+ * Filtrə uyğun bütün müştərilərə kursorla (yaddaşa hamısını yükləmədən) kütləvi göndəriş.
+ * build(customer) → { title, body, type, data, tag, ttlMs, imageUrl } (dilə görə mətn üçün).
+ */
+async function broadcastToCustomers(filter, build, { select = 'language' } = {}) {
+  const totals = { targets: 0, sent: 0, failed: 0, removed: 0 };
+  const cursor = Customer.find({ ...filter, fcmToken: { $type: 'string' } })
+    .select(`+fcmToken ${select}`)
+    .lean()
+    .cursor({ batchSize: 1000 });
+  let batch = [];
+  const flush = async () => {
+    if (!batch.length) return;
+    const r = await sendBulkToCustomers(batch);
+    totals.sent += r.sent;
+    totals.failed += r.failed;
+    totals.removed += r.removed;
+    batch = [];
+  };
+  // eslint-disable-next-line no-restricted-syntax
+  for await (const c of cursor) {
+    totals.targets += 1;
+    batch.push({ customerId: c._id, token: c.fcmToken, ...build(c) });
+    if (batch.length >= BULK_SIZE) await flush();
+  }
+  await flush();
+  return totals;
 }
 
 /** Sərnişindən yeni çat mesajı. Bir sifarişin mesajları eyni bildirişin üzərinə yazılır (tag). */
@@ -678,6 +788,8 @@ module.exports = {
   notifyNews,
   notifyAppUpdate,
   sendToCustomer,
+  sendBulkToCustomers,
+  broadcastToCustomers,
   CUSTOMER_STYLE,
   CHANNEL,
   CLICK_ACTION,

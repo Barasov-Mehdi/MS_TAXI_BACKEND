@@ -421,10 +421,11 @@ async function processDue(now = new Date()) {
 let timer = null;
 let running = false;
 
-function startScheduler(intervalMs = TICK_MS) {
+/** isLeader: çox instansiya rejimində yalnız lider instansiya işləyir (utils/leaderLock). */
+function startScheduler(intervalMs = TICK_MS, { isLeader = () => true } = {}) {
   if (timer) return;
   const tick = async () => {
-    if (running) return;
+    if (running || !isLeader()) return;
     running = true;
     try {
       const now = new Date();

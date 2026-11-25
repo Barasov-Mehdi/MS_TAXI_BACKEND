@@ -84,7 +84,8 @@ async function updateDriverLocation(driver, payload) {
   adminFeed.driverLocation(driver); // admin panelin canlı xəritəsi
 
   if (driver.currentOrderId) {
-    const order = await Order.findById(driver.currentOrderId);
+    // Yalnız lazım olan sahələr (hər GPS yeniləməsində tam sənəd oxunmasın)
+    const order = await Order.findById(driver.currentOrderId).select('customerId status').lean();
     // Faktiki yol (odometr): yalnız səfər zamanı, dəqiq GPS ilə və real hərəkətdə (sıçrayışlar atılır)
     if (order && order.status === 'TRIP_STARTED' && prevCoords && !(prevCoords[0] === 0 && prevCoords[1] === 0)) {
       const step = haversineMeters(prevCoords[1], prevCoords[0], latitude, longitude);
@@ -93,17 +94,14 @@ async function updateDriverLocation(driver, payload) {
       }
     }
     if (order) {
-      realtime.toCustomer(order.customerId, 'driver_location_updated', {
-        orderId: order._id,
-        latitude,
-        longitude,
-        heading,
-        speed,
-        timestamp: ts,
-      });
-      realtime.toOrder(order._id, 'driver_location_updated', {
-        orderId: order._id, latitude, longitude, heading, speed, timestamp: ts,
-      });
+      // Bir emit: sərnişinin şəxsi otağı + sifariş otağı (eyni soketə hadisə bir dəfə çatır, trafik 2 dəfə az)
+      const payload = { orderId: order._id, latitude, longitude, heading, speed, timestamp: ts };
+      if (typeof realtime.toCustomerAndOrder === 'function') {
+        realtime.toCustomerAndOrder(order.customerId, order._id, 'driver_location_updated', payload);
+      } else {
+        realtime.toCustomer(order.customerId, 'driver_location_updated', payload);
+        realtime.toOrder(order._id, 'driver_location_updated', payload);
+      }
     }
     const dist = await matchingService.distanceToCurrentDestination(driver);
     if (dist != null && dist <= settings.orderQueueActivationDistance) {
@@ -140,7 +138,50 @@ function publicDriverId(id) {
  *      busy: false → boş (xəritədə yaşıl), busy: true → sifarişdədir (xəritədə sarı).
  * Sürücünün şəxsi məlumatı (ad, nömrə, sifariş) qaytarılmır.
  */
-async function findNearbyDrivers({ latitude, longitude, radiusM, includeBusy } = {}) {
+/**
+ * Qısa ömürlü keş (yüksək yük üçün): xəritəsi açıq hər müştəri ~10 san-dən bir soruşur. 5 000 açıq tətbiq →
+ * saniyədə ~500 coğrafi sorğu. Eyni ~150 m xanadakı müştərilər 2.5 san ərzində EYNİ nəticəni alır, eyni anda
+ * gələn eyni sorğular bir DB sorğusunu paylaşır. Hər instansiyanın öz yaddaşında saxlanılır.
+ */
+const NEARBY_CACHE_TTL_MS = Number(process.env.NEARBY_CACHE_TTL_MS || 2500);
+const NEARBY_CACHE_MAX = 5000;
+const nearbyCache = new Map(); // key -> { at, promise }
+
+function nearbyCacheKey(lat, lng, radius, withBusy) {
+  // ~150 m xana (0.0015°)
+  const cell = (v) => Math.round(v / 0.0015);
+  return `${cell(lat)}:${cell(lng)}:${radius}:${withBusy ? 1 : 0}`;
+}
+
+async function findNearbyDrivers(args = {}) {
+  const lat = Number(args.latitude);
+  const lng = Number(args.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return [];
+  }
+  if (!NEARBY_CACHE_TTL_MS) return findNearbyDriversUncached(args);
+  const radiusKey = Math.round((Number(args.radiusM) || 3000) / 500) * 500;
+  const withBusy = args.includeBusy === true || args.includeBusy === 'true' || args.includeBusy === 1;
+  const key = nearbyCacheKey(lat, lng, radiusKey, withBusy);
+  const now = Date.now();
+  const hit = nearbyCache.get(key);
+  if (hit && now - hit.at < NEARBY_CACHE_TTL_MS) return hit.promise;
+  const promise = findNearbyDriversUncached(args).catch((e) => {
+    nearbyCache.delete(key);
+    throw e;
+  });
+  if (nearbyCache.size >= NEARBY_CACHE_MAX) {
+    // Köhnə qeydlər təmizlənir (Map daxiletmə sırasını saxlayır)
+    for (const [k, v] of nearbyCache) {
+      if (now - v.at >= NEARBY_CACHE_TTL_MS || nearbyCache.size >= NEARBY_CACHE_MAX) nearbyCache.delete(k);
+      else break;
+    }
+  }
+  nearbyCache.set(key, { at: now, promise });
+  return promise;
+}
+
+async function findNearbyDriversUncached({ latitude, longitude, radiusM, includeBusy } = {}) {
   const lat = Number(latitude);
   const lng = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {

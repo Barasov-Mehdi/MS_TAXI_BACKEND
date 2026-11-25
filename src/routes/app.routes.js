@@ -8,9 +8,14 @@ const Joi = require('joi');
 const rateLimit = require('express-rate-limit');
 const customerAccount = require('../services/customerAccount.service');
 
+const { makeStore } = require('../utils/rateLimitStore');
+
+let limiterSeq = 0;
 const limiter = (max) => rateLimit({
   windowMs: 15 * 60 * 1000,
   max,
+  store: makeStore(`app${(limiterSeq += 1)}`),
+  passOnStoreError: true,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: true },

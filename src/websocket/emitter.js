@@ -50,6 +50,11 @@ module.exports = {
     t.emit(event, payload);
   },
   toParties: emitToParties,
+  /** Sərnişin + sifariş otağı, bir emit ilə (yüksək tezlikli hadisələr üçün: sürücünün konumu). */
+  toCustomerAndOrder: (customerId, orderId, event, payload) => {
+    if (!ioRef) return;
+    ioRef.to(`customer:${customerId}`).to(`order:${orderId}`).emit(event, payload);
+  },
   // Bütün qoşulu müştəri tətbiqlərinə yayım (məs. yeni versiya)
   toCustomers: (event, payload) => emit('customers', event, payload),
   // Sürücülərə yayım: cityId verilibsə yalnız həmin şəhər, yoxsa bütün qoşulu sürücülər

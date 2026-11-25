@@ -128,6 +128,31 @@ async function notifyDrivers(info) {
 async function notifyCustomers(info, { wait = false, concurrency = 10 } = {}) {
   // eslint-disable-next-line global-require
   const push = require('./push.service');
+  // Yüksək yük: kursor + 500-lük FCM paketləri, mətn hər müştərinin dilində
+  if (typeof push.broadcastToCustomers === 'function') {
+    const build = (c) => {
+      const { title, body } = updateText(info, c.language);
+      return {
+        title,
+        body,
+        type: 'app_update',
+        channel: 'app',
+        tag: 'app_update',
+        data: { versionCode: info.latestVersionCode, storeUrl: info.storeUrl, platform: info.platform },
+        ttlMs: 3 * 24 * 60 * 60 * 1000,
+      };
+    };
+    const job = push.broadcastToCustomers(outdatedQuery(info), build);
+    if (wait) {
+      const r = await job;
+      return { targets: r.targets, notified: r.sent };
+    }
+    job
+      .then((r) => console.log(`[appVersion] müştərilərə (${info.platform}) yeniləmə bildirişi: ${r.sent}/${r.targets}`))
+      .catch((e) => console.error('[appVersion] müştəri bildirişi alınmadı', e && e.message));
+    const count = await Customer.countDocuments({ ...outdatedQuery(info), fcmToken: { $type: 'string' } }).catch(() => null);
+    return { targets: count, notified: null };
+  }
   const targets = await Customer.find({ fcmToken: { $ne: null }, ...outdatedQuery(info) })
     .select('_id language')
     .lean();

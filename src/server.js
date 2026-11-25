@@ -1,3 +1,6 @@
+const monitoring = require('./utils/monitoring');
+// Sentry ən əvvəl qoşulur (SENTRY_DSN varsa)
+monitoring.init();
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
@@ -12,6 +15,8 @@ const { errorHandler, notFoundHandler } = require('./utils/errors');
 const { attachWebsocket } = require('./websocket');
 const { seedDefaults } = require('./services/settings.service');
 const { startDispatchLoop, stopDispatchLoop } = require('./queues/dispatchLoop');
+const leaderLock = require('./utils/leaderLock');
+const { makeStore } = require('./utils/rateLimitStore');
 
 const app = express();
 // Heroku (and most reverse proxies) sets X-Forwarded-For. express-rate-limit
@@ -53,6 +58,9 @@ app.use(rateLimit({
   windowMs: 60_000,
   max: 300,
   keyGenerator: globalKey,
+  // Redis varsa bütün instansiyalar üçün vahid sayğac; Redis müvəqqəti əlçatan deyilsə sorğular bloklanmır
+  store: makeStore('global'),
+  passOnStoreError: true,
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: true },
@@ -85,7 +93,15 @@ let io = null;
 async function start() {
   config.validateConfig();
   io = attachWebsocket(server);
-  await mongoose.connect(config.mongoUri, { serverSelectionTimeoutMS: 10_000 });
+  await mongoose.connect(config.mongoUri, {
+    serverSelectionTimeoutMS: 10_000,
+    // Yüksək yükdə: hər instansiya üçün bağlantı hovuzu (Atlas planının limitinə görə tənzimləyin)
+    maxPoolSize: Number(process.env.MONGO_POOL_SIZE || 50),
+    minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE || 5),
+    // Production-da indekslər hər açılışda avtomatik qurulmasın (böyük kolleksiyada uzun çəkir):
+    // MONGO_AUTO_INDEX=false → indekslər `npm run indexes` ilə ayrıca qurulur
+    autoIndex: process.env.MONGO_AUTO_INDEX !== 'false',
+  });
   await seedDefaults();
   await require('./services/city.service').seedCities().catch((e) => console.error('[city] seed failed', e));
   await require('./services/pricing.service').migrateLegacyVehicleTypes().catch((e) => console.error('[pricing] migrate failed', e));
@@ -93,11 +109,13 @@ async function start() {
   await require('./services/earnings.service').backfillOnce().catch((e) => console.error('[earnings] backfill failed', e));
   await new Promise((resolve) => server.listen(config.port, resolve));
   console.log(`taxi-backend listening on :${config.port}`);
-  startDispatchLoop();
+  // Fon işləri yalnız LİDER instansiyada (bir neçə dyno olanda təkrarlanmasın)
+  const isLeader = leaderLock.campaign('background-jobs');
+  startDispatchLoop({ isLeader });
   // Planlaşdırılmış "Yeniliklər" vaxtı çatanda sürücülərə göndərilir
-  require('./services/news.service').startScheduler();
+  require('./services/news.service').startScheduler(undefined, { isLeader });
   // Planlı (avtomatik) sifarişlər: vaxtı çatanda sifariş yaradılır, 15 dəq əvvəl xatırlatma
-  require('./services/scheduledRide.service').startScheduler();
+  require('./services/scheduledRide.service').startScheduler(undefined, { isLeader });
 }
 
 let shuttingDown = false;
@@ -121,6 +139,9 @@ async function shutdown(signal) {
     require('./services/scheduledRide.service').stopScheduler();
     if (io) await new Promise((resolve) => io.close(resolve));
     if (server.listening) await new Promise((resolve) => server.close(resolve));
+    await leaderLock.resignAll();
+    await require('./utils/redis').close();
+    await monitoring.flush();
     await mongoose.disconnect();
     process.exit(0);
   } catch (e) {
@@ -135,9 +156,11 @@ if (require.main === module) {
   // Tutulmamış xəta prosesi səssiz çökdürməsin: səbəb loglanır; uncaughtException-da vəziyyət etibarsızdır, yenidən başlayır.
   process.on('unhandledRejection', (reason) => {
     console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+    monitoring.captureException(reason);
   });
   process.on('uncaughtException', (err) => {
     console.error('[uncaughtException]', err && err.stack ? err.stack : err);
+    monitoring.captureException(err);
     shutdown('uncaughtException');
   });
   start().catch((e) => {

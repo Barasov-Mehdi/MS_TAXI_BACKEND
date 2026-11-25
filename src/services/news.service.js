@@ -187,6 +187,21 @@ async function loadInScope(scope, id) {
 async function pushCustomers(pub, { concurrency = 10 } = {}) {
   // eslint-disable-next-line global-require
   const pushService = require('./push.service');
+  const message = {
+    title: String(pub.title || 'Yenilik').slice(0, 80),
+    body: pub.body,
+    type: 'news',
+    channel: 'news',
+    tag: 'news',
+    data: { newsId: pub.id },
+    ttlMs: 24 * 60 * 60 * 1000,
+    imageUrl: pub.imageUrl || undefined,
+  };
+  // Yüksək yük: kursor + 500-lük FCM paketləri (bütün müştəriləri yaddaşa yükləmədən)
+  if (typeof pushService.broadcastToCustomers === 'function') {
+    const r = await pushService.broadcastToCustomers({}, () => message);
+    return { targets: r.targets, pushed: r.sent };
+  }
   const targets = await Customer.find({ fcmToken: { $ne: null } }).select('_id').lean();
   let pushed = 0;
   let i = 0;
@@ -387,9 +402,12 @@ async function announceDue(now = new Date()) {
 }
 
 let timer = null;
-function startScheduler(intervalMs = 30000) {
+function startScheduler(intervalMs = 30000, { isLeader = () => true } = {}) {
   if (timer) return;
-  const tick = () => announceDue().catch((e) => console.error('[news] planlaşdırıcı', e && e.message));
+  const tick = () => {
+    if (!isLeader()) return;
+    announceDue().catch((e) => console.error('[news] planlaşdırıcı', e && e.message));
+  };
   timer = setInterval(tick, intervalMs);
   if (timer.unref) timer.unref();
   tick();

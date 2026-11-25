@@ -15,11 +15,18 @@ let running = false;
 let sweeping = false;
 let inFlight = Promise.resolve();
 
-function startDispatchLoop() {
+/**
+ * isLeader: bir neçə instansiya işləyəndə loop YALNIZ lider instansiyada işləyir (utils/leaderLock).
+ * Hadisələr Redis adapter vasitəsilə bütün instansiyalardakı soketlərə çatır.
+ */
+let leaderFn = () => true;
+
+function startDispatchLoop({ isLeader } = {}) {
   if (timer) return timer;
+  if (typeof isLeader === 'function') leaderFn = isLeader;
 
   timer = setInterval(() => {
-    if (running) return; // əvvəlki tick bitməyibsə üst-üstə düşməsin
+    if (running || !leaderFn()) return; // əvvəlki tick bitməyibsə üst-üstə düşməsin
     running = true;
     inFlight = (async () => {
       try {
@@ -34,7 +41,7 @@ function startDispatchLoop() {
   timer.unref();
 
   sweepTimer = setInterval(async () => {
-    if (sweeping) return;
+    if (sweeping || !leaderFn()) return;
     sweeping = true;
     try {
       await dispatchService.sweepStaleDrivers();

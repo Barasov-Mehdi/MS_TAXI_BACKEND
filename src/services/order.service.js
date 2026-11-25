@@ -960,17 +960,32 @@ async function rateOrder({ order, customer, score, comment }) {
     // Commission already applied in completeTrip() using driver.ratingAvg at trip end.
     // Here we only update the average for future trips.
 
-    const agg = await Rating.aggregate([
-      { $match: { driverId: order.driverId } },
-      { $group: { _id: '$driverId', avg: { $avg: '$score' }, n: { $sum: 1 } } },
-    ]).session(session);
-    if (agg[0]) {
-      await Driver.updateOne(
-        { _id: order.driverId },
-        { $set: { ratingAvg: agg[0].avg, ratingCount: agg[0].n } },
-        { session }
-      );
-    }
+    // Orta reytinq ARTIMLI yenilənir (əvvəl hər rəydə sürücünün BÜTÜN rəyləri yenidən toplanırdı — milyonlarla
+    // rəydə bu çox ağırdır). Atomik pipeline yeniləmə: (orta × say + yeni bal) / (say + 1)
+    const s = Number(score);
+    await Driver.updateOne(
+      { _id: order.driverId },
+      [
+        {
+          $set: {
+            ratingAvg: {
+              $cond: [
+                { $gt: [{ $ifNull: ['$ratingCount', 0] }, 0] },
+                {
+                  $divide: [
+                    { $add: [{ $multiply: [{ $ifNull: ['$ratingAvg', s] }, '$ratingCount'] }, s] },
+                    { $add: ['$ratingCount', 1] },
+                  ],
+                },
+                s,
+              ],
+            },
+            ratingCount: { $add: [{ $ifNull: ['$ratingCount', 0] }, 1] },
+          },
+        },
+      ],
+      { session }
+    );
     order.status = OrderStatus.COMPLETED;
     order.ratingId = rating._id;
     await order.save({ session });
