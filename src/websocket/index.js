@@ -9,10 +9,8 @@ const dispatchService = require('../services/dispatch.service');
 const { sessionMismatch, sessionMismatchError } = require('../utils/session');
 
 const LOCATION_MIN_INTERVAL_MS = 400; // eyni soketdən çox sıx konum yeniləməsi atılır
-// Access tokenin vaxtı bitəndə soket bağlanır: tətbiq tokeni yeniləyib yenidən qoşulur (bloklanmış / çıxış etmiş
-// istifadəçinin köhnə soketi saatlarla açıq qalmasın). Kiçik güzəşt: şəbəkə gecikməsi üçün.
-const TOKEN_EXPIRY_GRACE_MS = 30_000;
-const MAX_TIMER_MS = 2_147_000_000;
+// Açıq soketin hesab vəziyyəti bu intervalla yoxlanılır (+ təsadüfi 0–30 san, hamısı eyni anda sorğu atmasın)
+const REVALIDATE_MS = Number(process.env.SOCKET_REVALIDATE_MS || 5 * 60 * 1000);
 
 /**
  * Bir neçə server instansiyası (Heroku dyno) üçün: REDIS_URL verilibsə Socket.IO hadisələri Redis vasitəsilə
@@ -83,15 +81,25 @@ function attachWebsocket(httpServer) {
 
   io.on('connection', async (socket) => {
     const user = socket.user;
-    if (socket.data.exp) {
-      const ms = Math.min(socket.data.exp * 1000 - Date.now() + TOKEN_EXPIRY_GRACE_MS, MAX_TIMER_MS);
-      const t = setTimeout(() => {
-        socket.emit('token_expired', {});
-        socket.disconnect(true);
-      }, Math.max(1000, ms));
-      if (t.unref) t.unref();
-      socket.on('disconnect', () => clearTimeout(t));
-    }
+    // Açıq soket vaxtaşırı yoxlanılır: hesab bloklanıb / silinib / başqa cihazdan daxil olunubsa bağlantı qırılır.
+    // (Əvvəl token vaxtı bitəndə HƏR soket bağlanırdı: socket.io müştərisi "io server disconnect"dən sonra özü
+    // yenidən qoşulmadığı üçün köhnə sürücü tətbiqləri 15 dəqiqədən bir canlı hadisələri itirirdi.)
+    const revalidate = setInterval(async () => {
+      try {
+        const fresh = await User.findById(user._id).select('isActive role activeSessionId').lean();
+        if (!fresh || !fresh.isActive) {
+          socket.emit(fresh && fresh.role === 'CUSTOMER' ? 'account_blocked' : 'session_ended', {});
+          setTimeout(() => socket.disconnect(true), 300);
+          return;
+        }
+        if (sessionMismatch(fresh, socket.data.sid)) {
+          socket.emit('session_replaced', {});
+          setTimeout(() => socket.disconnect(true), 300);
+        }
+      } catch (_) { /* baza müvəqqəti əlçatan deyil: növbəti yoxlamada */ }
+    }, REVALIDATE_MS + Math.floor(Math.random() * 30_000));
+    if (revalidate.unref) revalidate.unref();
+    socket.on('disconnect', () => clearInterval(revalidate));
     try {
       socket.join(`${user.role.toLowerCase()}:${user._id}`);
       if (user.role === 'CUSTOMER') {
