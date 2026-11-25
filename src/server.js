@@ -62,7 +62,7 @@ app.use(rateLimit({
   store: makeStore('global'),
   passOnStoreError: true,
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders: false, 
   validate: { trustProxy: true },
 }));
 
