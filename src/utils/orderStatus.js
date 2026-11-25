@@ -55,7 +55,7 @@ const ALLOWED_TRANSITIONS = {
   [OrderStatus.TRIP_STARTED]: [
     OrderStatus.TRIP_COMPLETED,
     OrderStatus.DRIVER_CANCELLED,
-    OrderStatus.CUSTOMER_CANCELLED,
+    // CUSTOMER_CANCELLED yoxdur: sərnişin maşındadır, tətbiqdən ləğv edib ödənişsiz gedə bilməz
     OrderStatus.ADMIN_CANCELLED,
     OrderStatus.DISPUTED,
   ],

@@ -1,0 +1,9 @@
+node_modules
+.env
+.env.*
+!.env.example
+coverage
+test
+*.rar
+*.zip
+firebase-service-account.json

@@ -21,6 +21,11 @@ const avatarService = require('../services/avatar.service');
 const { blockDuringMaintenance } = require('../services/maintenance.service');
 const receiptService = require('../services/receipt.service');
 const multer = require('multer');
+const { publicOrder } = require('../utils/publicOrder');
+const routeChange = require('../services/routeChange.service');
+const feesService = require('../services/fees.service');
+const { getSettings } = require('../services/settings.service');
+const { isActive } = require('../utils/orderStatus');
 
 // Profil şəkli yaddaşda qəbul olunur (diskə yazılmır) → GridFS
 const avatarUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: avatarService.MAX_BYTES, files: 1 } }).single('file');
@@ -261,7 +266,7 @@ router.post('/orders/quote', async (req, res, next) => {
       : pricingService.VEHICLE_TYPES;
     // Cavab müştərinin istədiyi adla qaytarılır (köhnə tətbiq köhnə adla soruşsa da işləsin)
     const types = requested.filter((t) => pricingService.VEHICLE_TYPES.includes(pricingService.normalizeVehicleType(t)));
-    const metrics = pricingService.resolveTripMetrics({
+    const metrics = await pricingService.resolveTripMetricsAsync({
       points: [pickup, ...stops],
       distanceMeters: req.body.distanceMeters,
       durationMin: req.body.durationMin,
@@ -303,7 +308,18 @@ router.post('/orders/quote', async (req, res, next) => {
       }
       if (promo.valid) promo.error = null;
     }
-    ok(res, { quotes, promo, ...metrics, currency: 'AZN' });
+
+    // Əvvəlki gec ləğvdən qalan haqq: sifariş yaradılanda qiymətə əlavə olunacaq (müştəri əvvəlcədən görsün)
+    const debtMinor = feesService.sumFees(await feesService.pendingFeesOf(req.customer._id));
+    if (debtMinor) {
+      for (const t of Object.keys(quotes)) {
+        quotes[t].cancellationDebtMinor = debtMinor;
+        quotes[t].priceMinor += debtMinor;
+        quotes[t].price = quotes[t].priceMinor / 100;
+        if (quotes[t].originalPriceMinor != null) quotes[t].originalPriceMinor += debtMinor;
+      }
+    }
+    ok(res, { quotes, promo, ...metrics, cancellationDebtMinor: debtMinor, currency: 'AZN' });
   } catch (e) { next(e); }
 });
 
@@ -329,15 +345,22 @@ router.post('/orders', blockDuringMaintenance, async (req, res, next) => {
       promoCode,
       paymentMethod,
       passenger: req.body.passenger,
-      idempotencyKey: req.headers['idempotency-key'],
+      idempotencyKey: req.headers['idempotency-key'] ? String(req.headers['idempotency-key']).slice(0, 100) : undefined,
     });
-    ok(res, { order }, {}, 201);
+    ok(res, { order: publicOrder(order) }, {}, 201);
   } catch (e) { next(e); }
 });
 
+// GET /customers/orders?before=<ISO createdAt>&limit=20 → { orders, hasMore, nextBefore }
 router.get('/orders', async (req, res, next) => {
   try {
-    const rows = await Order.find({ customerId: req.customer._id, deletedAt: null }).sort({ createdAt: -1 }).limit(50);
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 30, 1), 50);
+    const filter = { customerId: req.customer._id, deletedAt: null };
+    const before = req.query.before ? new Date(String(req.query.before)) : null;
+    if (before && !Number.isNaN(before.getTime())) filter.createdAt = { $lt: before };
+    const fetched = await Order.find(filter).sort({ createdAt: -1 }).limit(limit + 1);
+    const hasMore = fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit) : fetched;
 
     // Tarixçə üçün: hər sifarişə sürücü məlumatı və müştərinin verdiyi ulduz əlavə olunur.
     const driverIds = [...new Set(rows.map((o) => o.driverId && String(o.driverId)).filter(Boolean))];
@@ -355,6 +378,7 @@ router.get('/orders', async (req, res, next) => {
         id: d._id,
         firstName: u && u.firstName,
         lastName: u && u.lastName,
+        // Telefon yalnız aktiv səfərdə göstərilir (aşağıda): bitmiş səfərlərdə sürücünün nömrəsi açıq qalmır
         phone: u && u.phone,
         ratingAvg: d.ratingAvg,
         ratingCount: d.ratingCount,
@@ -379,13 +403,16 @@ router.get('/orders', async (req, res, next) => {
       if (!complaintByOrder.has(String(c.orderId))) complaintByOrder.set(String(c.orderId), { status: c.status, category: c.category, createdAt: c.createdAt });
     });
 
-    const orders = rows.map((o) => ({
-      ...o.toObject(),
-      driver: o.driverId ? driverById.get(String(o.driverId)) || null : null,
-      myRating: scoreByOrder.get(String(o._id)) || null,
-      complaint: complaintByOrder.get(String(o._id)) || null,
-    }));
-    ok(res, { orders });
+    const orders = rows.map((o) => {
+      const drv = o.driverId ? driverById.get(String(o.driverId)) || null : null;
+      return publicOrder(o, {
+        driver: drv ? { ...drv, phone: isActive(o.status) ? drv.phone : undefined } : null,
+        myRating: scoreByOrder.get(String(o._id)) || null,
+        complaint: complaintByOrder.get(String(o._id)) || null,
+      });
+    });
+    const nextBefore = hasMore && rows.length ? rows[rows.length - 1].createdAt : null;
+    ok(res, { orders, hasMore, nextBefore });
   } catch (e) { next(e); }
 });
 
@@ -405,13 +432,15 @@ async function publicDriver(order) {
     // Bağlantını bərpa et ki, növbəti dəfə birbaşa tapılsın
     if (v) Driver.updateOne({ _id: d._id, vehicleId: null }, { $set: { vehicleId: v._id } }).catch(() => {});
   }
+  const live = isActive(order.status) && order.status !== OrderStatus.TRIP_COMPLETED && order.status !== OrderStatus.RATING_PENDING;
   return {
     id: d._id,
     firstName: u.firstName,
     lastName: u.lastName,
-    phone: u.phone,
+    // Bitmiş səfərdən sonra sürücünün nömrəsi və canlı yeri göstərilmir
+    phone: live ? u.phone : undefined,
     ratingAvg: d.ratingAvg,
-    location: d.location,
+    location: live ? d.location : undefined,
     vehicle: v
       ? { make: v.make || '', model: v.model || '', color: v.color || '', plateNumber: v.plateNumber || '', year: v.year || null, seats: v.seats || null }
       : null,
@@ -437,7 +466,13 @@ router.get('/orders/active', async (req, res, next) => {
       status: { $nin: [...inactive, ...waiting] },
     }).sort({ createdAt: -1 });
     if (live) {
-      return ok(res, { order: live, driver: await publicDriver(live), awaitingRating: false });
+      const cancelFee = await feesService.cancellationFeeFor(live, await getSettings()).catch(() => null);
+      return ok(res, {
+        order: publicOrder(live),
+        driver: await publicDriver(live),
+        awaitingRating: false,
+        cancelFee: cancelFee ? { amountMinor: cancelFee.amountMinor, reason: cancelFee.reason, freeUntil: cancelFee.freeUntil, feeMinor: cancelFee.feeMinor || cancelFee.amountMinor } : null,
+      });
     }
 
     const pending = await Order.findOne({
@@ -447,7 +482,7 @@ router.get('/orders/active', async (req, res, next) => {
       driverId: { $ne: null },
     }).sort({ completedAt: -1, createdAt: -1 });
     if (pending && !pending.ratingId && !(await Rating.exists({ orderId: pending._id }))) {
-      return ok(res, { order: pending, driver: await publicDriver(pending), awaitingRating: true });
+      return ok(res, { order: publicOrder(pending), driver: await publicDriver(pending), awaitingRating: true });
     }
     return ok(res, { order: null, driver: null, awaitingRating: false });
   } catch (e) { next(e); }
@@ -458,7 +493,7 @@ router.get('/orders/:id', async (req, res, next) => {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
     const driverPublic = await publicDriver(order);
-    ok(res, { order, driver: driverPublic });
+    ok(res, { order: publicOrder(order), driver: driverPublic });
   } catch (e) { next(e); }
 });
 
@@ -479,19 +514,89 @@ router.get('/orders/:id/receipt', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/orders/:id/cancel', async (req, res, next) => {
+// GET /customers/orders/:id/cancel-fee → indi ləğv etsə tutulacaq haqq (təsdiq pəncərəsi üçün)
+router.get('/orders/:id/cancel-fee', async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    ok(res, { order: await orderService.cancelOrder({ order, user: req.user, role: 'CUSTOMER', reason: req.body.reason }) });
+    const fee = await feesService.cancellationFeeFor(order, await getSettings());
+    ok(res, { amountMinor: fee.amountMinor, reason: fee.reason, freeUntil: fee.freeUntil, feeMinor: fee.feeMinor || fee.amountMinor });
   } catch (e) { next(e); }
 });
 
-router.post('/orders/:id/rating', async (req, res, next) => {
+router.post(
+  '/orders/:id/cancel',
+  validated(Joi.object({ reason: Joi.string().trim().allow('', null).max(300) })),
+  async (req, res, next) => {
+    try {
+      const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
+      if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+      const cancelled = await orderService.cancelOrder({ order, user: req.user, role: 'CUSTOMER', reason: req.body.reason || undefined });
+      ok(res, {
+        order: publicOrder(cancelled),
+        cancellationFeeMinor: (cancelled && cancelled.cancellationFee && cancelled.cancellationFee.amountMinor) || 0,
+      });
+    } catch (e) { next(e); }
+  }
+);
+
+router.post(
+  '/orders/:id/rating',
+  validated(Joi.object({
+    score: Joi.number().integer().min(1).max(5).required().messages({ 'any.required': 'Ulduz seçin', 'number.base': 'Ulduz seçin' }),
+    comment: Joi.string().trim().allow('', null).max(500),
+  })),
+  async (req, res, next) => {
+    try {
+      const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
+      if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+      ok(res, { rating: await orderService.rateOrder({ order, customer: req.customer, score: req.body.score, comment: req.body.comment || '' }) });
+    } catch (e) { next(e); }
+  }
+);
+
+// ---------------------------------------------------------------- Marşrutun dəyişməsi (Bolt kimi)
+// POST /customers/orders/:id/route/quote { stops:[{lat,lng,label,address}], distanceMeters?, durationMin? }
+//   → { quote: { previousPriceMinor, priceMinor, differenceMinor, distanceMeters, traveledMeters, remainingMeters, ... } }
+//   distanceMeters/durationMin: tətbiqin Mapbox marşrutu (səfər başlayıbsa sürücünün yerindən yeni ünvanlara)
+// POST /customers/orders/:id/route { stops, distanceMeters?, durationMin?, expectedPriceMinor }
+//   → { order, quote }  |  409 PRICE_CHANGED (details.quote — yeni qiyməti göstərib yenidən təsdiq alın)
+const routeBody = Joi.object({
+  stops: Joi.array().min(1).max(routeChange.MAX_STOPS).items(Joi.object({
+    lat: Joi.number().min(-90).max(90).required(),
+    lng: Joi.number().min(-180).max(180).required(),
+    label: Joi.string().allow('', null).max(200),
+    address: Joi.string().allow('', null).max(300),
+  }).unknown(true)).required(),
+  distanceMeters: Joi.number().min(0).max(2_000_000).allow(null),
+  durationMin: Joi.number().min(0).max(1440).allow(null),
+  expectedPriceMinor: Joi.number().integer().min(0).allow(null),
+});
+
+router.post('/orders/:id/route/quote', validated(routeBody), async (req, res, next) => {
   try {
     const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
     if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    ok(res, { rating: await orderService.rateOrder({ order, customer: req.customer, score: req.body.score, comment: req.body.comment }) });
+    const quote = await routeChange.quoteRouteChange({
+      order, stops: req.body.stops, distanceMeters: req.body.distanceMeters, durationMin: req.body.durationMin,
+    });
+    ok(res, { quote });
+  } catch (e) { next(e); }
+});
+
+router.post('/orders/:id/route', validated(routeBody), async (req, res, next) => {
+  try {
+    const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
+    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+    const result = await routeChange.applyRouteChange({
+      order,
+      stops: req.body.stops,
+      distanceMeters: req.body.distanceMeters,
+      durationMin: req.body.durationMin,
+      expectedPriceMinor: req.body.expectedPriceMinor,
+      actorUserId: req.user._id,
+    });
+    ok(res, { order: publicOrder(result.order), quote: result.quote });
   } catch (e) { next(e); }
 });
 
@@ -572,21 +677,35 @@ router.get('/office', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/orders/:id/issues', async (req, res, next) => {
-  try {
-    const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
-    if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
-    const issue = await OrderIssue.create({
-      orderId: order._id,
-      reporterRole: 'CUSTOMER',
-      reporterUserId: req.user._id,
-      type: req.body.type,
-      description: req.body.description,
-    });
-    adminFeed.issue(issue);
-    ok(res, { issue }, {}, 201);
-  } catch (e) { next(e); }
-});
+const ISSUE_TYPES = ['DRIVER_NOT_ARRIVED', 'WRONG_PICKUP', 'WRONG_DESTINATION', 'PAYMENT_PROBLEM', 'PRICE_PROBLEM', 'APP_PROBLEM', 'SAFETY', 'ACCIDENT', 'OTHER'];
+const MAX_ISSUES_PER_ORDER = 5;
+
+router.post(
+  '/orders/:id/issues',
+  validated(Joi.object({
+    type: Joi.string().valid(...ISSUE_TYPES).required(),
+    description: Joi.string().trim().allow('').max(1000),
+  })),
+  async (req, res, next) => {
+    try {
+      const order = await Order.findOne({ _id: req.params.id, customerId: req.customer._id });
+      if (!order) throw new AppError('ORDER_NOT_FOUND', 'Order not found', 404);
+      const count = await OrderIssue.countDocuments({ orderId: order._id, reporterUserId: req.user._id });
+      if (count >= MAX_ISSUES_PER_ORDER) {
+        throw new AppError('TOO_MANY_ISSUES', 'Bu səfər üzrə çox sayda müraciət göndərilib. Dəstəyə yazın', 429);
+      }
+      const issue = await OrderIssue.create({
+        orderId: order._id,
+        reporterRole: 'CUSTOMER',
+        reporterUserId: req.user._id,
+        type: req.body.type,
+        description: req.body.description || '',
+      });
+      adminFeed.issue(issue);
+      ok(res, { issue }, {}, 201);
+    } catch (e) { next(e); }
+  }
+);
 
 router.get('/orders/:id/messages', async (req, res, next) => {
   try {

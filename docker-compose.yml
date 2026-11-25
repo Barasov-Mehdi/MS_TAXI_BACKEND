@@ -1,26 +1,59 @@
+# Lokal işə salma: docker compose up --build
+# Qeyd: kod MongoDB transaction-larından istifadə edir → Mongo REPLICA SET rejimində olmalıdır
+# (tək node-lu replica set kifayətdir). Atlas-da bu avtomatikdir.
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: 3000
+  MONGODB_URI: mongodb://mongo:27017/taxi?replicaSet=rs0
+  REDIS_URL: redis://redis:6379
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?JWT_ACCESS_SECRET təyin edin (ən azı 32 simvol)}
+  JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET təyin edin (ən azı 32 simvol)}
+  OTP_SECRET: ${OTP_SECRET:?OTP_SECRET təyin edin}
+  SMS_API_KEY: ${SMS_API_KEY:?SMS_API_KEY təyin edin}
+  SMS_SENDER_NAME: ${SMS_SENDER_NAME:-1sms.az}
+  MAPBOX_TOKEN: ${MAPBOX_TOKEN:-}
+  CORS_ORIGIN: ${CORS_ORIGIN:-}
+  FIREBASE_SERVICE_ACCOUNT_B64: ${FIREBASE_SERVICE_ACCOUNT_B64:-}
+
 services:
   api:
     build: .
     ports: ["3000:3000"]
-    environment:
-      NODE_ENV: production
-      PORT: 3000
-      MONGODB_URI: mongodb://mongo:27017/taxi
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change-me-access}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change-me-refresh}
-      SMS_API_KEY: ${SMS_API_KEY:-}
-      SMS_SENDER_NAME: ${SMS_SENDER_NAME:-1sms.az}
-      OTP_SECRET: ${OTP_SECRET:-change-me-otp}
-    depends_on: [mongo]
+    environment: *api-env
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  # İstəyə bağlı: köhnəlmiş sürücü sweep-i (dispatch artıq api prosesindədir)
   worker:
     build: .
     command: node src/queues/worker.js
-    environment:
-      MONGODB_URI: mongodb://mongo:27017/taxi
-    depends_on: [mongo]
+    environment: *api-env
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
   mongo:
     image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
     ports: ["27017:27017"]
     volumes: ["mongo_data:/data/db"]
+    healthcheck:
+      # Replica set ilk dəfə burada yaradılır (sonrakı işə salmalarda artıq mövcuddur)
+      test: >
+        mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}).ok }"
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
 volumes:
   mongo_data:

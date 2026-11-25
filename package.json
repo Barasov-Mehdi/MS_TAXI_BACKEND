@@ -15,6 +15,7 @@
     "node": "22.x"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.5",
     "cors": "^2.8.5",
@@ -29,6 +30,7 @@
     "morgan": "^1.10.0",
     "multer": "2.0.2",
     "pdfkit": "0.20.2",
+    "redis": "^4.7.1",
     "socket.io": "^4.8.1",
     "uuid": "^11.0.3",
     "winston": "^3.17.0"

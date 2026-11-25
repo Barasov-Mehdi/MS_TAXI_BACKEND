@@ -34,6 +34,13 @@ const DEFAULTS = {
   // Uyğun sürücü tapılmadıqda təkrar axtarış intervalı (san)
   dispatchRetrySeconds: 3,
   cancellationFeeMinor: 0,
+  // Sürücü qəbul etdikdən sonra müştəri bu müddət (san) ərzində PULSUZ ləğv edə bilər.
+  // Sonra (və ya sürücü gəlib çatıbsa) tarifdəki cancellationFeeMinor tutulur (0 → haqq yoxdur).
+  freeCancelSeconds: 120,
+  // Sürücü çatdıqdan sonra bu qədər dəqiqə pulsuz gözləmə; sonra tarifdəki waitingFeePerMinuteMinor
+  freeWaitingMinutes: 3,
+  // Bir sifarişdə marşrutu ən çox neçə dəfə dəyişmək olar
+  maxRouteChanges: 10,
   // Sürücü qəbul etdiyi sifarişi ləğv edəndə sifariş bu qədər dəfəyə qədər yenidən axtarışa qaytarılır
   maxRedispatch: 5,
 

@@ -1,5 +1,6 @@
 const { PricingRule } = require('../models');
 const { haversineMeters } = require('../utils/geo');
+const routeService = require('./route.service');
 
 const VEHICLE_TYPES = ['basic', 'city', 'premium'];
 // Köhnə adlar (əvvəlki versiyalardan qalan sifariş/tarif və köhnə müştəri tətbiqləri üçün)
@@ -34,6 +35,8 @@ async function migrateLegacyVehicleTypes() {
   return changed;
 }
 const DEFAULT_SPEED_KMH = 30;
+// Marşrut məlum deyilsə: düz xətt × 1.3 (şəhər/kənd yolları üçün orta əyrilik)
+const STRAIGHT_LINE_FACTOR = 1.3;
 
 /**
  * Nəqliyyat sinfi üçün aktiv tarif. Həmin sinif üçün qayda yoxdursa 'basic',
@@ -52,8 +55,9 @@ async function getActiveRule(vehicleType = 'basic') {
 }
 
 /**
- * Marşrutun məsafəsi və müddəti. Müştərinin göndərdiyi (Mapbox) dəyər yalnız məntiqli
- * hüdudlardadırsa qəbul edilir; əks halda düz xətt məsafəsindən təxmin edilir.
+ * Marşrutun məsafəsi və müddəti (sinxron, şəbəkəsiz yoxlama). Müştərinin göndərdiyi (Mapbox) dəyər
+ * məntiqli hüdudlardadırsa qəbul edilir; əks halda düz xətt məsafəsindən təxmin edilir.
+ * Hüdud genişdir: dağ yollarında (serpantin, körpü dolanbacı) yol düz xəttdən 3-4 dəfə uzun ola bilir.
  */
 function resolveTripMetrics({ points, distanceMeters, durationMin }) {
   let straight = 0;
@@ -61,13 +65,33 @@ function resolveTripMetrics({ points, distanceMeters, durationMin }) {
     straight += haversineMeters(points[i - 1].lat, points[i - 1].lng, points[i].lat, points[i].lng);
   }
   const d = Number(distanceMeters);
-  const okDistance = Number.isFinite(d) && d >= straight * 0.95 && d <= straight * 3 + 500;
-  const finalDistance = okDistance ? d : Math.round(straight * 1.25);
+  const okDistance = Number.isFinite(d) && d > 0 && d >= straight * 0.9 && d <= straight * 4 + 3000;
+  const finalDistance = okDistance ? Math.round(d) : Math.round(straight * STRAIGHT_LINE_FACTOR);
 
   const t = Number(durationMin);
   const okDuration = Number.isFinite(t) && t > 0 && t <= 600;
   const finalDuration = okDuration ? t : (finalDistance / 1000 / DEFAULT_SPEED_KMH) * 60;
-  return { distanceMeters: finalDistance, durationMin: Math.round(finalDuration * 10) / 10 };
+  return { distanceMeters: finalDistance, durationMin: Math.round(finalDuration * 10) / 10, source: okDistance ? 'client' : 'estimate' };
+}
+
+/**
+ * Əsas funksiya: əvvəl SERVERİN öz marşrutu (route.service, MAPBOX_TOKEN varsa), sonra sinxron yoxlama.
+ * Tətbiqin km-i serverinkinə ±15% yaxındırsa tətbiqinki saxlanılır: müştərinin ekranda gördüyü km ilə
+ * qiymətin km-i eyni olur. Fərq böyükdürsə serverin hesabı keçərlidir (saxta km ilə ucuz qiymət alınmasın).
+ */
+async function resolveTripMetricsAsync({ points, distanceMeters, durationMin }) {
+  const server = await routeService.routeMetrics(points).catch(() => null);
+  if (!server) return resolveTripMetrics({ points, distanceMeters, durationMin });
+  const d = Number(distanceMeters);
+  const closeDistance = Number.isFinite(d) && d > 0 && Math.abs(d - server.distanceMeters) <= server.distanceMeters * 0.15 + 150;
+  const t = Number(durationMin);
+  const closeDuration = Number.isFinite(t) && t > 0 && t <= Math.max(server.durationMin * 2, server.durationMin + 10)
+    && t >= server.durationMin * 0.5;
+  return {
+    distanceMeters: closeDistance ? Math.round(d) : server.distanceMeters,
+    durationMin: Math.round((closeDuration ? t : server.durationMin) * 10) / 10,
+    source: closeDistance ? 'client' : 'server',
+  };
 }
 
 /**
@@ -170,6 +194,7 @@ module.exports = {
   getActiveRule,
   priceFromBands,
   resolveTripMetrics,
+  resolveTripMetricsAsync,
   VEHICLE_TYPES,
   normalizeVehicleType,
   migrateLegacyVehicleTypes,

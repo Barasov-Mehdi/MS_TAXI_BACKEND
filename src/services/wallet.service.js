@@ -77,7 +77,9 @@ async function applyTripCommission(driverId, order, session) {
   const ratingAvg = driver.ratingAvg ?? 5;
   const { isLowRated, rate } = commissionPolicy(settings, ratingAvg);
 
-  const fare = order.pricingSnapshot.finalPriceMinor;
+  // Köhnə ləğv haqqı (cancellationDebtMinor) bu səfərin gəliri deyil: komissiya ondan tutulmur
+  const snap = order.pricingSnapshot || {};
+  const fare = Math.max(0, (snap.finalPriceMinor || 0) - (snap.cancellationDebtMinor || 0));
   const commissionMinor = settings.tripCommissionType === 'FIXED'
     ? Math.round(rate)
     : percentOf(fare, rate);

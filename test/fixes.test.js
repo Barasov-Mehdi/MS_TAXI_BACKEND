@@ -85,11 +85,22 @@ describe('order.service.cancelOrder - cari səfər ləğvi növbəni aktivləşd
       _id: 'trip', status: 'TRIP_STARTED', driverId: 'drv', customerId: 'cus', version: 0,
       save: jest.fn().mockResolvedValue(),
     };
-    await orderService.cancelOrder({ order, user: { _id: 'u1' }, role: 'CUSTOMER', reason: 'x' });
+    // Səfər zamanı yalnız admin ləğv edə bilər (müştəri üçün TRIP_IN_PROGRESS - ayrıca test)
+    await orderService.cancelOrder({ order, user: { _id: 'u1' }, role: 'ADMIN', reason: 'x' });
     expect(queued.status).toBe('DRIVER_HEADING_TO_CUSTOMER');
     expect(drv.currentOrderId).toBe('q1');
     expect(drv.queuedOrderIds).toEqual([]);
     expect(realtime.toDriver).toHaveBeenCalledWith('drv', 'queued_order_activated', { orderId: 'q1' });
+  });
+});
+
+describe('order.service.cancelOrder - müştəri səfər zamanı ləğv edə bilmir', () => {
+  const orderService = require('../src/services/order.service');
+  test.each(['TRIP_STARTED', 'DISPUTED', 'WAITING_FOR_ADMIN'])('%s → 409 TRIP_IN_PROGRESS', async (status) => {
+    const order = { _id: 'o', status, driverId: 'drv', customerId: 'cus', version: 0, save: jest.fn() };
+    await expect(orderService.cancelOrder({ order, user: { _id: 'u1' }, role: 'CUSTOMER' }))
+      .rejects.toMatchObject({ code: 'TRIP_IN_PROGRESS', status: 409 });
+    expect(order.save).not.toHaveBeenCalled();
   });
 });
 

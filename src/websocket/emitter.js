@@ -78,6 +78,18 @@ module.exports = {
       console.error('[ws] kickUserSessions failed', e && e.message ? e.message : e);
     }
   },
+  /**
+   * Sürücü sifarişdən ayrıldı (ləğv / başqa sürücüyə verildi): onun soketləri `order:<id>` otağından çıxarılır,
+   * sərnişinin sonrakı hadisələri (status, marşrut, mesaj) köhnə sürücüyə getmir.
+   */
+  leaveOrderRoom: (driverId, orderId) => {
+    if (!ioRef || !driverId || !orderId) return;
+    try {
+      ioRef.in(`driver:${driverId}`).socketsLeave(`order:${orderId}`);
+    } catch (e) {
+      console.error('[ws] leaveOrderRoom failed', e && e.message ? e.message : e);
+    }
+  },
   // Otaqdakı bütün bağlantıları qırır (məs. bloklanmış istifadəçi)
   disconnectRoom: (room) => {
     if (ioRef) ioRef.in(room).disconnectSockets(true);

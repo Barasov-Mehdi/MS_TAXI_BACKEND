@@ -791,6 +791,12 @@ router.post('/users/:id/disable', async (req, res, next) => {
       realtime.toDriver(driver._id, 'driver_offline', { reason: 'BLOCKED' });
       pushService.notifyAccount(driver._id, 'blocked').catch(() => {});
     }
+    // Açıq soket bağlantıları dərhal qırılır (əvvəl token bitənə qədər hadisələr almağa davam edirdi)
+    if (user.role === 'CUSTOMER') {
+      const cust = await Customer.findOne({ userId: user._id }).select('_id').lean();
+      if (cust) realtime.toCustomer(cust._id, 'account_blocked', { reason: req.body.reason || null });
+    }
+    if (realtime.disconnectRoom) setTimeout(() => realtime.disconnectRoom(`${String(user.role).toLowerCase()}:${user._id}`), 500).unref();
     await audit(req, 'USER_DISABLE', 'User', user._id, true, false, req.body.reason);
     ok(res, { user: publicUser(user) });
   } catch (e) { next(e); }

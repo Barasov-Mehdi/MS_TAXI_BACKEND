@@ -23,6 +23,16 @@ const customerSchema = new mongoose.Schema(
     newsSeenAt: { type: Date, default: null },
     // Müştəri hesabını özü silib (customerAccount.service): şəxsi məlumatlar təmizlənib, hesab bağlıdır
     deletedAt: { type: Date, default: null, index: true },
+    // Ödənilməmiş ləğv haqları (nağd): növbəti səfərin qiymətinə əlavə olunur, səfər bitəndə silinir
+    pendingFees: [{
+      orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+      driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver' },
+      amountMinor: Number,
+      createdAt: { type: Date, default: Date.now },
+      _id: false,
+    }],
+    // Sifariş yaradılarkən qısa kilid: eyni anda iki sorğu iki aktiv sifariş yaratmasın
+    orderLockAt: { type: Date, default: null, select: false },
   },
   { timestamps: true }
 );

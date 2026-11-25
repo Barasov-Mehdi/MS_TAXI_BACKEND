@@ -9,6 +9,37 @@ const dispatchService = require('../services/dispatch.service');
 const { sessionMismatch, sessionMismatchError } = require('../utils/session');
 
 const LOCATION_MIN_INTERVAL_MS = 400; // eyni soketdən çox sıx konum yeniləməsi atılır
+// Access tokenin vaxtı bitəndə soket bağlanır: tətbiq tokeni yeniləyib yenidən qoşulur (bloklanmış / çıxış etmiş
+// istifadəçinin köhnə soketi saatlarla açıq qalmasın). Kiçik güzəşt: şəbəkə gecikməsi üçün.
+const TOKEN_EXPIRY_GRACE_MS = 30_000;
+const MAX_TIMER_MS = 2_147_000_000;
+
+/**
+ * Bir neçə server instansiyası (Heroku dyno) üçün: REDIS_URL verilibsə Socket.IO hadisələri Redis vasitəsilə
+ * bütün instansiyalara paylanır. Yoxdursa (və ya paket quraşdırılmayıbsa) tək instansiya rejimi.
+ */
+async function attachRedisAdapter(io) {
+  const url = process.env.REDIS_URL || '';
+  if (!/^rediss?:\/\//i.test(url)) return false;
+  try {
+    // eslint-disable-next-line global-require
+    const { createAdapter } = require('@socket.io/redis-adapter');
+    // eslint-disable-next-line global-require
+    const { createClient } = require('redis');
+    const tls = url.startsWith('rediss://') ? { tls: true, rejectUnauthorized: process.env.REDIS_TLS_INSECURE !== 'true' } : {};
+    const pub = createClient({ url, socket: tls });
+    const sub = pub.duplicate();
+    pub.on('error', (e) => console.error('[ws] redis pub', e && e.message));
+    sub.on('error', (e) => console.error('[ws] redis sub', e && e.message));
+    await Promise.all([pub.connect(), sub.connect()]);
+    io.adapter(createAdapter(pub, sub));
+    console.log('[ws] Redis adapter aktivdir (çox instansiya rejimi)');
+    return true;
+  } catch (e) {
+    console.error('[ws] Redis adapter qoşulmadı, tək instansiya rejimi:', e && e.message);
+    return false;
+  }
+}
 
 function attachWebsocket(httpServer) {
   const io = new Server(httpServer, {
@@ -30,6 +61,7 @@ function attachWebsocket(httpServer) {
       // Bir hesab = bir cihaz: köhnə cihazın soketi qəbul edilmir (tətbiq SESSION_REPLACED görüb çıxış edir)
       if (sessionMismatch(user, payload.sid)) return next(new Error(sessionMismatchError(user).code));
       socket.data.sid = payload.sid || null;
+      socket.data.exp = payload.exp || null;
       socket.user = user;
       next();
     } catch (e) {
@@ -51,6 +83,15 @@ function attachWebsocket(httpServer) {
 
   io.on('connection', async (socket) => {
     const user = socket.user;
+    if (socket.data.exp) {
+      const ms = Math.min(socket.data.exp * 1000 - Date.now() + TOKEN_EXPIRY_GRACE_MS, MAX_TIMER_MS);
+      const t = setTimeout(() => {
+        socket.emit('token_expired', {});
+        socket.disconnect(true);
+      }, Math.max(1000, ms));
+      if (t.unref) t.unref();
+      socket.on('disconnect', () => clearTimeout(t));
+    }
     try {
       socket.join(`${user.role.toLowerCase()}:${user._id}`);
       if (user.role === 'CUSTOMER') {
@@ -144,7 +185,8 @@ function attachWebsocket(httpServer) {
     }));
   });
 
+  attachRedisAdapter(io).catch(() => {});
   return io;
 }
 
-module.exports = { attachWebsocket };
+module.exports = { attachWebsocket, attachRedisAdapter };

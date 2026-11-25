@@ -46,7 +46,36 @@ const orderSchema = new mongoose.Schema(
       finalPriceMinor: Number,
       // Səfər yarıda dayandırılıbsa: ilkin (tam) qiymət burada saxlanılır, finalPriceMinor isə gedilən km qədərdir
       originalFinalPriceMinor: Number,
+      // Əvvəlki sifarişlərdən qalan ləğv haqqı (nağd ödənişdə bu səfərə əlavə olunur, finalPriceMinor-a daxildir)
+      cancellationDebtMinor: { type: Number, default: 0 },
+      // Marşrut dəyişməsindən əvvəlki ilk qiymət (müştəriyə "əvvəl / indi" göstərmək üçün)
+      initialFinalPriceMinor: Number,
+      cancellationFeeMinor: Number,
     },
+    // Bu səfərdə yığılan köhnə ləğv haqları: səfər bitəndə ilkin sürücüyə ötürülür
+    collectedFees: [{
+      orderId: { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
+      driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver' },
+      amountMinor: Number,
+      _id: false,
+    }],
+    // Müştəri ləğv edəndə tutulan haqq (sürücü gəlib çatıb və ya pulsuz ləğv müddəti keçib)
+    cancellationFee: {
+      amountMinor: { type: Number, default: 0 },
+      driverId: { type: mongoose.Schema.Types.ObjectId, ref: 'Driver', default: null },
+      reason: { type: String, default: null }, // DRIVER_ARRIVED | LATE_CANCEL
+    },
+    // Sifariş zamanı marşrut dəyişiklikləri (Bolt kimi: təyinat dəyişir / dayanacaq əlavə olunur)
+    routeChanges: [{
+      at: Date,
+      status: String,
+      fromPriceMinor: Number,
+      toPriceMinor: Number,
+      traveledMeters: Number,
+      distanceMeters: Number,
+      stopCount: Number,
+      _id: false,
+    }],
     // Ardıcıl dispatch: sifariş eyni anda yalnız BİR sürücüyə təklif olunur.
     // offeredToDriverIds - artıq təklif olunmuş (qəbul etməmiş) sürücülərin siyahısı, təkrar təklif olunmur.
     offeredToDriverIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Driver' }],
@@ -63,6 +92,8 @@ const orderSchema = new mongoose.Schema(
     // Optimistic lock: eyni anda iki proseslərin sifarişi iki dəfə növbəti sürücüyə keçirməsinin qarşısını alır
     dispatchSeq: { type: Number, default: 0 },
     acceptedAt: Date,
+    // Sürücü götürmə yerinə çatdı (gözləmə haqqı bundan sonra sayılır)
+    arrivedAt: Date,
     startedAt: Date,
     completedAt: Date,
     cancelledAt: Date,

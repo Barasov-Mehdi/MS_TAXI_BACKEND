@@ -118,6 +118,7 @@ async function shutdown(signal) {
   try {
     await stopDispatchLoop();
     require('./services/news.service').stopScheduler();
+    require('./services/scheduledRide.service').stopScheduler();
     if (io) await new Promise((resolve) => io.close(resolve));
     if (server.listening) await new Promise((resolve) => server.close(resolve));
     await mongoose.disconnect();

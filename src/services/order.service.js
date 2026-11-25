@@ -13,6 +13,12 @@ const { normalizePhone } = require('../utils/validators');
 const realtime = require('../websocket/emitter');
 const adminFeed = require('../websocket/adminFeed');
 const pushService = require('./push.service');
+const feesService = require('./fees.service');
+
+/** Sürücünün soketlərini sifariş otağından çıxarır (emitter-də funksiya yoxdursa - məs. testlərdə - heç nə etmir). */
+const leaveOrderRoom = (driverId, orderId) => {
+  if (driverId && typeof realtime.leaveOrderRoom === 'function') realtime.leaveOrderRoom(driverId, orderId);
+};
 
 /** Push xətası əsas axını pozmasın. */
 const fireAndForget = (p) => Promise.resolve(p).catch((e) => console.error('[push]', e && e.message ? e.message : e));
@@ -74,7 +80,9 @@ function announceQueuedActivated(driverId, queued) {
  * gündəlik qazancı, sifariş sayı və tutulan komissiya itmir. orderId unikal olduğu üçün təkrar yazılmır.
  */
 async function recordEarning(order, driverId, commission, session) {
-  const gross = (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0;
+  // Köhnə ləğv haqqı (cancellationDebtMinor) sürücünün qazancı deyil: ilkin sürücüyə ötürülür
+  const snap = order.pricingSnapshot || {};
+  const gross = Math.max(0, (snap.finalPriceMinor || 0) - (snap.cancellationDebtMinor || 0));
   const commissionMinor = commission && commission.commissionMinor ? commission.commissionMinor : 0;
   const stops = order.stops || [];
   const last = stops[stops.length - 1] || {};
@@ -110,7 +118,7 @@ function cleanPassenger(p) {
   return { forOther: true, name, phone };
 }
 
-async function createOrder({
+async function createOrderUnlocked({
   customer,
   user,
   pickup,
@@ -165,7 +173,7 @@ async function createOrder({
     throw new AppError('INVALID_VEHICLE_TYPE', 'Unknown vehicle type', 400);
   }
   const stopList = stops && stops.length ? stops : [destination];
-  const { distanceMeters, durationMin } = pricingService.resolveTripMetrics({
+  const { distanceMeters, durationMin } = await pricingService.resolveTripMetricsAsync({
     points: [pickup, ...stopList],
     distanceMeters: clientDistance,
     durationMin: clientDuration,
@@ -182,6 +190,12 @@ async function createOrder({
     discountMinor = r.discountMinor;
   }
   const priced = await pricingService.calculateTripPrice({ ...tripInput, promoDiscountMinor: discountMinor });
+  // Əvvəlki ləğv(lər)dən qalan haqq: nağd ödənişdə bu səfərin qiymətinə əlavə olunur
+  const pendingFees = await feesService.pendingFeesOf(customer._id);
+  const debtMinor = feesService.sumFees(pendingFees);
+  priced.cancellationDebtMinor = debtMinor;
+  priced.finalPriceMinor += debtMinor;
+  priced.initialFinalPriceMinor = priced.finalPriceMinor;
 
   const dispatchFields = await dispatchService.initialDispatchFields();
   // Regional ofis üçün: sifariş hansı şəhərə aiddir (sürücü tapılmasa da ofis görsün)
@@ -209,6 +223,7 @@ async function createOrder({
         passenger: cleanPassenger(passenger),
         promoCode: promoCode ? String(promoCode).toUpperCase() : null,
         pricingSnapshot: priced,
+        collectedFees: pendingFees.map((f) => ({ orderId: f.orderId, driverId: f.driverId, amountMinor: f.amountMinor })),
         idempotencyKey: idempotencyKey || null,
         rejectedDriverIds: excludeDriverIds,
         continuedFromOrderId,
@@ -245,6 +260,47 @@ async function createOrder({
   }
   adminFeed.orderChanged(order._id);
   return (await Order.findById(order._id)) || order;
+}
+
+const ORDER_LOCK_MS = 15000;
+
+/**
+ * Müştəri üzrə qısa kilid: "aktiv sifariş var?" yoxlaması ilə sifarişin yaradılması arasında ikinci sorğu
+ * (başqa cihaz / fərqli Idempotency-Key) ikinci aktiv sifariş yarada bilməsin. Kilid 15 san sonra öz-özünə keçir.
+ */
+async function withCustomerLock(customerId, idempotencyKey, fn) {
+  const now = new Date();
+  const locked = await Customer.findOneAndUpdate(
+    { _id: customerId, $or: [{ orderLockAt: null }, { orderLockAt: { $exists: false } }, { orderLockAt: { $lt: new Date(now.getTime() - ORDER_LOCK_MS) } }] },
+    { $set: { orderLockAt: now } },
+    { new: false }
+  ).select('+orderLockAt');
+  if (!locked) {
+    // Eyni açarla paralel sorğu: birincinin yaratdığı sifariş qaytarılır
+    if (idempotencyKey) {
+      for (let i = 0; i < 12; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 250));
+        // eslint-disable-next-line no-await-in-loop
+        const existing = await Order.findOne({ customerId, idempotencyKey });
+        if (existing) return existing;
+      }
+    }
+    throw new AppError('ACTIVE_ORDER_EXISTS', 'Sifarişiniz artıq yaradılır', 409);
+  }
+  try {
+    return await fn();
+  } finally {
+    await Customer.updateOne({ _id: customerId, orderLockAt: now }, { $set: { orderLockAt: null } }).catch(() => {});
+  }
+}
+
+async function createOrder(args) {
+  if (args.idempotencyKey) {
+    const existing = await Order.findOne({ customerId: args.customer._id, idempotencyKey: args.idempotencyKey });
+    if (existing) return existing;
+  }
+  return withCustomerLock(args.customer._id, args.idempotencyKey, () => createOrderUnlocked(args));
 }
 
 async function acceptOrder({ orderId, driver, user }) {
@@ -376,7 +432,7 @@ async function rejectOrder({ orderId, driver }) {
   return dispatchService.rejectOffer({ orderId, driver });
 }
 
-async function transitionByDriver({ orderId, driver, user, toStatus, extra = {} }) {
+async function transitionByDriver({ orderId, driver, user, toStatus, extra = {}, mutate = null }) {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -393,6 +449,7 @@ async function transitionByDriver({ orderId, driver, user, toStatus, extra = {} 
     const from = order.status;
     order.status = toStatus;
     Object.assign(order, extra);
+    if (typeof mutate === 'function') await mutate(order);
     order.version += 1;
     await order.save({ session });
     await recordHistory(order._id, from, toStatus, 'DRIVER', user._id, extra.cancelReason, session);
@@ -409,17 +466,28 @@ async function transitionByDriver({ orderId, driver, user, toStatus, extra = {} 
 }
 
 async function startTrip({ orderId, driver, user }) {
+  const settings = await getSettings();
+  const now = new Date();
   return transitionByDriver({
     orderId,
     driver,
     user,
     toStatus: OrderStatus.TRIP_STARTED,
-    extra: { startedAt: new Date() },
+    extra: { startedAt: now },
+    // Pulsuz gözləmə müddətindən artıq gözləmə: qiymətə bir dəfə əlavə olunur
+    mutate: async (order) => {
+      const w = await feesService.waitingFeeFor(order, settings, now).catch(() => ({ amountMinor: 0 }));
+      if (!w.amountMinor) return;
+      const snap = order.pricingSnapshot || {};
+      const prev = snap.waitingFareMinor || 0;
+      order.set('pricingSnapshot.waitingFareMinor', w.amountMinor);
+      order.set('pricingSnapshot.finalPriceMinor', (snap.finalPriceMinor || 0) - prev + w.amountMinor);
+    },
   });
 }
 
 async function arrive({ orderId, driver, user }) {
-  return transitionByDriver({ orderId, driver, user, toStatus: OrderStatus.DRIVER_ARRIVED });
+  return transitionByDriver({ orderId, driver, user, toStatus: OrderStatus.DRIVER_ARRIVED, extra: { arrivedAt: new Date() } });
 }
 
 /**
@@ -441,6 +509,11 @@ async function completeTrip({ orderId, driver, user, early = null }) {
       const original = (order.pricingSnapshot && order.pricingSnapshot.finalPriceMinor) || 0;
       order.set('pricingSnapshot.originalFinalPriceMinor', original);
       order.set('pricingSnapshot.finalPriceMinor', early.chargedMinor);
+      // Heç nə alınmırsa köhnə ləğv haqqı da alınmamış sayılır (müştərinin borcu qalır)
+      if (!early.chargedMinor) {
+        order.set('pricingSnapshot.cancellationDebtMinor', 0);
+        order.collectedFees = [];
+      }
       order.stoppedEarly = {
         at: new Date(),
         reason: early.reason,
@@ -468,6 +541,8 @@ async function completeTrip({ orderId, driver, user, early = null }) {
     }
     await order.save({ session });
     await recordEarning(order, driver._id, commission, session);
+    // Müştərinin əvvəlki ləğv haqları bu səfərdə nağd alındı: ilkin sürücüyə ötürülür, borc silinir
+    await feesService.settleCollectedFees(order, driver._id, session);
     await recordHistory(order._id, OrderStatus.TRIP_STARTED, OrderStatus.TRIP_COMPLETED, 'DRIVER', user._id, null, session);
 
     assertTransition(order.status, OrderStatus.RATING_PENDING);
@@ -559,6 +634,8 @@ async function redispatchAfterDriverCancel({ order, user, reason }) {
   }
 
   announceQueuedActivated(driverId, activated);
+  // Ləğv edən sürücü bu sifarişin otağından çıxarılır (sərnişinin sonrakı hadisələrini almasın)
+  leaveOrderRoom(driverId, order._id);
   // Sürücüyə socket hadisəsi göndərilmir: ləğvi özü edib (REST cavabı kifayətdir), əks halda tətbiq
   // "Sifariş ləğv olundu" xəbərdarlığını ləğv edən sürücünün özünə göstərərdi.
   // Sərnişinə: sifariş ləğv olunmayıb, yeni sürücü axtarılır
@@ -625,7 +702,10 @@ async function stopTrip({ orderId, driver, user, reason, latitude, longitude, do
       stopCount: 0,
       vehicleType: order.vehicleType || 'basic',
     });
-    chargedMinor = Math.min(original, p.finalPriceMinor);
+    const debt = (order.pricingSnapshot && order.pricingSnapshot.cancellationDebtMinor) || 0;
+    const waiting = (order.pricingSnapshot && order.pricingSnapshot.waitingFareMinor) || 0;
+    // Gedilən hissə (ilkin səfər qiymətindən çox olmur) + gözləmə + köhnə ləğv haqqı
+    chargedMinor = Math.min(Math.max(0, original - debt - waiting), p.finalPriceMinor) + waiting + debt;
   }
 
   const done = await completeTrip({
@@ -733,6 +813,16 @@ async function cancelOrder({ order, user, role, reason }) {
     // Həddən çox ötürülüb: sifariş həqiqətən ləğv olunur (aşağıdakı adi axın)
   }
 
+  // Sərnişin maşındadır: müştəri tətbiqdən ləğv edə bilməz (pulsuz gediş qarşısı). Problem varsa dəstəyə yazır.
+  if (role === 'CUSTOMER' && (order.status === OrderStatus.TRIP_STARTED || order.status === OrderStatus.DISPUTED
+    || order.status === OrderStatus.WAITING_FOR_ADMIN)) {
+    throw new AppError(
+      'TRIP_IN_PROGRESS',
+      'Səfər başlayıb, sifarişi ləğv etmək olmaz. Problem varsa sürücü ilə danışın və ya dəstəyə yazın',
+      409
+    );
+  }
+
   const map = {
     CUSTOMER: OrderStatus.CUSTOMER_CANCELLED,
     DRIVER: OrderStatus.DRIVER_CANCELLED,
@@ -783,6 +873,16 @@ async function cancelOrder({ order, user, role, reason }) {
     return Order.findById(order._id);
   }
 
+  // Gec ləğv (sürücü çatıb və ya pulsuz müddət keçib): haqq müştərinin növbəti səfərinə əlavə olunur
+  let fee = { amountMinor: 0, reason: null };
+  if (role === 'CUSTOMER' && order.driverId) {
+    try {
+      fee = await feesService.cancellationFeeFor(order, await getSettings());
+    } catch (e) {
+      console.error('[cancel] fee calc failed', e && e.message);
+    }
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
   let activated = null;
@@ -792,9 +892,15 @@ async function cancelOrder({ order, user, role, reason }) {
     order.cancelledAt = new Date();
     order.cancelReason = reason;
     order.cancelledBy = role;
+    if (fee.amountMinor) {
+      order.cancellationFee = { amountMinor: fee.amountMinor, driverId: order.driverId, reason: fee.reason };
+    }
     order.version += 1;
     await order.save({ session });
     await recordHistory(order._id, from, to, role, user._id, reason, session);
+    if (fee.amountMinor) {
+      await feesService.addCustomerDebt(order.customerId, { orderId: order._id, driverId: order.driverId, amountMinor: fee.amountMinor }, session);
+    }
 
     if (order.driverId) {
       // Yalnız BU sifarişə aid sahələr təmizlənir: növbədəki (QUEUED) sifariş ləğv olunanda sürücünün
@@ -816,7 +922,10 @@ async function cancelOrder({ order, user, role, reason }) {
       // Sürücü özü ləğv edibsə bildiriş lazım deyil; sərnişin / admin ləğv edəndə telefona bildiriş gedir.
       if (role !== 'DRIVER') fireAndForget(pushService.notifyOrderCancelled(order.driverId, order._id, role));
     }
-    realtime.toCustomer(order.customerId, 'order_cancelled', { orderId: order._id, status: to, reason });
+    realtime.toCustomer(order.customerId, 'order_cancelled', {
+      orderId: order._id, status: to, reason, cancellationFeeMinor: fee.amountMinor || 0,
+    });
+    if (order.driverId) leaveOrderRoom(order.driverId, order._id);
     return order;
   } catch (e) {
     await session.abortTransaction();
@@ -959,6 +1068,7 @@ async function adminReassign({ order, newDriverId, adminUser, reason }) {
   realtime.toDriver(outcome.newDriverId, 'new_order', { orderId: order._id, reassigned: true });
   fireAndForget(pushService.notifyOrderAssigned(outcome.newDriverId, order._id));
   if (before.driverId && String(before.driverId) !== String(outcome.newDriverId)) {
+    leaveOrderRoom(before.driverId, order._id);
     realtime.toDriver(before.driverId, 'order_cancelled', { orderId: order._id });
     fireAndForget(pushService.notifyOrderRemoved(before.driverId, order._id));
   }

@@ -26,7 +26,7 @@ const L = {
     title: 'Səfər qəbzi', order: 'Sifariş', date: 'Tarix', route: 'Marşrut', from: 'Haradan', to: 'Haraya', stop: 'Dayanacaq',
     trip: 'Səfər', distance: 'Məsafə', duration: 'Müddət', class: 'Sinif', payment: 'Ödəniş',
     rounding: 'Yuvarlaqlaşdırma', minFare: 'Minimum gediş haqqı', tariffAdj: 'Tarif düzəlişi', surgeX: 'Yüksək tələbat', stoppedAdj: 'Yolda dayandırıldı',
-    fare: 'Qiymət', base: 'Başlanğıc', distFare: 'Məsafə', timeFare: 'Vaxt', stopFare: 'Dayanacaqlar', waiting: 'Gözləmə',
+    fare: 'Qiymət', base: 'Başlanğıc', distFare: 'Məsafə', timeFare: 'Vaxt', stopFare: 'Dayanacaqlar', waiting: 'Gözləmə', prevCancel: 'Əvvəlki ləğv haqqı',
     discount: 'Endirim', total: 'Cəmi', driver: 'Sürücü', name: 'Ad, soyad', car: 'Avtomobil', plate: 'Nömrə',
     stopped: 'Səfər yolda dayandırılıb — gedilən məsafəyə görə hesablanıb', thanks: 'Səfəriniz üçün təşəkkür edirik!',
     km: 'km', min: 'dəq',
@@ -37,7 +37,7 @@ const L = {
     title: 'Trip receipt', order: 'Order', date: 'Date', route: 'Route', from: 'From', to: 'To', stop: 'Stop',
     trip: 'Trip', distance: 'Distance', duration: 'Duration', class: 'Class', payment: 'Payment',
     rounding: 'Rounding', minFare: 'Minimum fare', tariffAdj: 'Fare adjustment', surgeX: 'High demand', stoppedAdj: 'Stopped on the way',
-    fare: 'Fare', base: 'Base fare', distFare: 'Distance', timeFare: 'Time', stopFare: 'Stops', waiting: 'Waiting',
+    fare: 'Fare', base: 'Base fare', distFare: 'Distance', timeFare: 'Time', stopFare: 'Stops', waiting: 'Waiting', prevCancel: 'Previous cancellation fee',
     discount: 'Discount', total: 'Total', driver: 'Driver', name: 'Name', car: 'Car', plate: 'Plate',
     stopped: 'Trip was stopped on the way — charged for the distance travelled', thanks: 'Thank you for riding with us!',
     km: 'km', min: 'min',
@@ -48,7 +48,7 @@ const L = {
     title: 'Чек поездки', order: 'Заказ', date: 'Дата', route: 'Маршрут', from: 'Откуда', to: 'Куда', stop: 'Остановка',
     trip: 'Поездка', distance: 'Расстояние', duration: 'Время', class: 'Класс', payment: 'Оплата',
     rounding: 'Округление', minFare: 'Минимальная стоимость', tariffAdj: 'Корректировка тарифа', surgeX: 'Повышенный спрос', stoppedAdj: 'Остановлено в пути',
-    fare: 'Стоимость', base: 'Посадка', distFare: 'Расстояние', timeFare: 'Время', stopFare: 'Остановки', waiting: 'Ожидание',
+    fare: 'Стоимость', base: 'Посадка', distFare: 'Расстояние', timeFare: 'Время', stopFare: 'Остановки', waiting: 'Ожидание', prevCancel: 'Плата за прошлую отмену',
     discount: 'Скидка', total: 'Итого', driver: 'Водитель', name: 'Имя', car: 'Автомобиль', plate: 'Номер',
     stopped: 'Поездка остановлена в пути — оплата за пройденное расстояние', thanks: 'Спасибо за поездку!',
     km: 'км', min: 'мин',
@@ -59,7 +59,7 @@ const L = {
     title: 'Yolculuk fişi', order: 'Sipariş', date: 'Tarih', route: 'Güzergâh', from: 'Nereden', to: 'Nereye', stop: 'Durak',
     trip: 'Yolculuk', distance: 'Mesafe', duration: 'Süre', class: 'Sınıf', payment: 'Ödeme',
     rounding: 'Yuvarlama', minFare: 'Minimum ücret', tariffAdj: 'Tarife düzeltmesi', surgeX: 'Yüksek talep', stoppedAdj: 'Yolda durduruldu',
-    fare: 'Ücret', base: 'Açılış', distFare: 'Mesafe', timeFare: 'Süre', stopFare: 'Duraklar', waiting: 'Bekleme',
+    fare: 'Ücret', base: 'Açılış', distFare: 'Mesafe', timeFare: 'Süre', stopFare: 'Duraklar', waiting: 'Bekleme', prevCancel: 'Önceki iptal ücreti',
     discount: 'İndirim', total: 'Toplam', driver: 'Sürücü', name: 'Ad soyad', car: 'Araç', plate: 'Plaka',
     stopped: 'Yolculuk yolda durduruldu — gidilen mesafeye göre ücretlendirildi', thanks: 'Yolculuğunuz için teşekkür ederiz!',
     km: 'km', min: 'dk',
@@ -86,6 +86,8 @@ function fareBreakdown(o) {
     ['timeFare', snap.timeFareMinor],
     ['stopFare', snap.stopFareMinor],
     ['waiting', snap.waitingFareMinor],
+    // Əvvəlki gec ləğvin haqqı (nağd ödənişdə bu səfərə əlavə olunub)
+    ['prevCancel', snap.cancellationDebtMinor],
   ].map(([key, v]) => ({ key, amount: Math.round(Number(v) || 0), part: true })).filter((p) => p.amount > 0);
   const discount = Math.max(0, Math.round(Number(snap.discountMinor) || 0));
   const lines = [...parts];
